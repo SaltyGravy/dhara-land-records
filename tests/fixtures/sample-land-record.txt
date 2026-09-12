@@ -1,0 +1,11 @@
+LAND RECORD EXTRACT
+
+Owner name: Suresh Patel
+Khasra number: 77/3
+Khata number: KH-1002
+Plot area: 2.45 hectare
+Village: Baragaon
+Tehsil: Pindra
+District: Varanasi
+Land classification: Agricultural - Irrigated
+Mutation reference: MUT/2026/44

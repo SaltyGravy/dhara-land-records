@@ -1,0 +1,39 @@
+services:
+  database:
+    image: postgis/postgis:16-3.4-alpine
+    environment:
+      POSTGRES_DB: dhara
+      POSTGRES_USER: dhara
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-password}
+    volumes:
+      - dhara_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dhara -d dhara"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://dhara:${POSTGRES_PASSWORD:-local-development-password}@database:5432/dhara
+      TOKEN_SECRET: ${TOKEN_SECRET:-replace-this-development-token-secret}
+      FILE_ENCRYPTION_KEY: ${FILE_ENCRYPTION_KEY:-replace-this-development-encryption-key}
+      AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-replace-this-development-audit-key}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-Dhara@2026}
+      LRMS_BASE_URL: ${LRMS_BASE_URL:-}
+      DILRMP_BASE_URL: ${DILRMP_BASE_URL:-}
+      GEOSERVER_URL: ${GEOSERVER_URL:-}
+      REGISTRATION_API_URL: ${REGISTRATION_API_URL:-}
+      NOTIFICATION_GATEWAY_URL: ${NOTIFICATION_GATEWAY_URL:-}
+    volumes:
+      - dhara_uploads:/data/uploads
+    depends_on:
+      database:
+        condition: service_healthy
+
+volumes:
+  dhara_postgres:
+  dhara_uploads:

@@ -1,0 +1,41 @@
+{
+  "name": "dhara-land-records",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:api": ".venv/bin/python -m uvicorn backend.app:app --reload --port 8000",
+    "dev:all": "concurrently -k \"npm:dev:api\" \"npm:dev\"",
+    "build": "tsc -b && vite build",
+    "build:site": "tsc -b && SITES_BUILD=1 vite build",
+    "preview:site": "SITES_BUILD=1 vite preview",
+    "db:generate": "drizzle-kit generate",
+    "preview": "vite preview",
+    "test:ui": "node tests/ui-smoke.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "drizzle-orm": "0.45.2",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/workers-types": "4.20260515.1",
+    "@openai/sites-vite-plugin": "0.2.0",
+    "@types/node": "^22.20.2",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "concurrently": "latest",
+    "drizzle-kit": "0.31.10",
+    "puppeteer-core": "latest",
+    "typescript": "latest",
+    "wrangler": "4.92.0"
+  }
+}

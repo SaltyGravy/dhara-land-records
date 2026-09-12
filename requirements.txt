@@ -1,0 +1,9 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+sqlalchemy>=2.0,<3
+python-multipart>=0.0.20,<1
+pypdf>=5,<7
+psycopg[binary]>=3.2,<4
+PyJWT>=2.10,<3
+cryptography>=45,<47
+Pillow>=11,<13
