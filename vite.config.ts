@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { sites } from '@openai/sites-vite-plugin'
-import hostingConfig from './.openai/hosting.json'
+import hostingConfig from './.openai/hosting.json' with { type: 'json' }
 
 const PLACEHOLDER_DATABASE_ID = '00000000-0000-4000-8000-000000000000'
 
@@ -24,6 +24,7 @@ export default defineConfig(async () => {
       react(),
       sites(),
       cloudflare({
+        viteEnvironment: { name: 'server' },
         config: {
           name: 'dhara-land-records',
           main: './worker/index.ts',
