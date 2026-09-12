@@ -123,7 +123,8 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 function exactBuffer(bytes: Uint8Array): ArrayBuffer { return Uint8Array.from(bytes).buffer }
 
 async function hashPassword(password: string): Promise<string> {
-  const iterations = 210_000
+  // The Sites Web Crypto runtime caps PBKDF2 at 100,000 iterations.
+  const iterations = 100_000
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits'])
   const digest = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256))
