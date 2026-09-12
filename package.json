@@ -15,14 +15,18 @@
     "preview:site": "SITES_BUILD=1 vite preview",
     "db:generate": "drizzle-kit generate",
     "preview": "vite preview",
-    "test:ui": "node tests/ui-smoke.mjs"
+    "test:ui": "node tests/ui-smoke.mjs",
+    "test:ocr-ui": "node tests/ocr-ui-smoke.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "drizzle-orm": "0.45.2",
+    "jose": "^6.1.0",
     "lucide-react": "latest",
+    "pdfjs-dist": "^5.4.149",
     "react": "latest",
     "react-dom": "latest",
+    "tesseract.js": "^6.0.1",
     "vite": "latest"
   },
   "devDependencies": {

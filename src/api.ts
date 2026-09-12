@@ -1,4 +1,5 @@
 import type { LandDocument } from './data'
+import type { OnlineOcrResult } from './ocr'
 
 export interface ApiStats {
   total_records: number
@@ -81,6 +82,26 @@ export interface IntegrationStatus {
   configuration_variable: string
 }
 
+export interface CitizenRequestStatus {
+  id?: string
+  request_id?: string
+  tracking_token?: string
+  request_type?: string
+  record_id?: string | null
+  status: string
+  resolution?: string
+  created_at: string
+  updated_at?: string
+}
+
+export interface LearningMetrics {
+  language_performance: Array<{ language: string; records: number; average_confidence: number; verified: number }>
+  correction_frequency: Array<{ field_label: string; corrections: number }>
+  learned_patterns: Array<{ field_label: string; language: string; predicted_value: string; corrected_value: string; occurrences: number }>
+  adaptive_threshold: number
+  mechanism: string
+}
+
 const TOKEN_KEY = 'dhara_access_token'
 let accessToken = localStorage.getItem(TOKEN_KEY)
 
@@ -136,9 +157,24 @@ export const api = {
     localStorage.setItem(TOKEN_KEY, accessToken)
     return response.user
   },
-  logout: () => {
-    accessToken = null
-    localStorage.removeItem(TOKEN_KEY)
+  oidcStatus: () => request<{ configured: boolean; provider: string | null }>('/api/auth/oidc/status'),
+  beginOidc: () => request<{ authorization_url: string }>('/api/auth/oidc/start', { method: 'POST' }),
+  completeOidc: async (code: string) => {
+    const response = await request<{ access_token: string; user: AuthUser }>('/api/auth/oidc/complete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+    })
+    accessToken = response.access_token
+    localStorage.setItem(TOKEN_KEY, accessToken)
+    return response.user
+  },
+  submitCitizenRequest: (payload: { request_type: string; record_id: string; applicant_name: string; contact: string; details: string; consent: boolean }) => request<CitizenRequestStatus>('/api/citizen/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  citizenRequestStatus: (requestId: string, token: string) => request<CitizenRequestStatus>(`/api/citizen/requests/${encodeURIComponent(requestId)}?token=${encodeURIComponent(token)}`),
+  logout: async () => {
+    try { if (accessToken) await request<{ status: string }>('/api/auth/logout', { method: 'POST' }) }
+    finally {
+      accessToken = null
+      localStorage.removeItem(TOKEN_KEY)
+    }
   },
   me: () => request<AuthUser>('/api/auth/me'),
   users: () => request<AdminUser[]>('/api/users'),
@@ -153,8 +189,13 @@ export const api = {
   notifications: () => request<NotificationItem[]>('/api/notifications'),
   markNotificationRead: (id: number) => request<NotificationItem>(`/api/notifications/${id}/read`, { method: 'POST' }),
   parcels: () => request<{ type: 'FeatureCollection'; features: ParcelFeature[] }>('/api/parcels'),
+  updateParcel: (id: number, payload: { owner?: string; classification?: string; status?: string; record_id?: string | null }) => request<ParcelFeature>(`/api/parcels/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  importParcels: (collection: unknown) => request<{ imported: number }>('/api/parcels/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collection) }),
   versions: (id: string) => request<RecordVersion[]>(`/api/documents/${id}/versions`),
   integrations: () => request<IntegrationStatus[]>('/api/integrations'),
+  learningMetrics: () => request<LearningMetrics>('/api/model/metrics'),
+  testIntegration: (key: string) => request<{ key: string; connected: boolean; status: number; message: string }>(`/api/integrations/${key}/test`, { method: 'POST' }),
+  syncIntegration: (key: string, documentId: string) => request<{ key: string; record_id: string; synchronized: boolean; status: number; message: string }>(`/api/integrations/${key}/sync/${documentId}`, { method: 'POST' }),
   sourceBlobUrl: async (id: string) => {
     const headers = new Headers()
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
@@ -168,6 +209,12 @@ export const api = {
     appendContext(form, context)
     return request<LandDocument[]>('/api/documents/batch', { method: 'POST', body: form })
   },
+  submitExtraction: (documentId: string, result: OnlineOcrResult) => request<LandDocument>(`/api/documents/${documentId}/extraction`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result),
+  }),
+  failExtraction: (documentId: string, message: string) => request<LandDocument>(`/api/documents/${documentId}/extraction/fail`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
+  }),
   updateField: (documentId: string, fieldId: number, value: string) => request<LandDocument>(`/api/documents/${documentId}/fields/${fieldId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value, actor: 'browser' }),
   }),

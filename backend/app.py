@@ -25,7 +25,7 @@ from .models import AuditEvent, Document, ExtractedField, FieldCorrection, Notif
 from .migrations import upgrade_schema
 from .ocr import FIELD_RULES, detect_language, extract_fields, extract_text
 from .schemas import (
-    AdminUserOut, ApprovalRequest, AuditOut, DocumentOut, FieldOut, FieldUpdate, LoginRequest,
+    AdminUserOut, ApprovalRequest, AuditOut, DocumentOut, ExtractionFailure, ExtractionSubmission, FieldOut, FieldUpdate, LoginRequest,
     NotificationOut, ParcelUpdate, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
 )
 from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
@@ -451,6 +451,85 @@ async def upload_batch(
     for file in files:
         records.append(serialize_document(await persist_upload(file, state, district, document_type, language, user, db)))
     return records
+
+
+@app.post("/api/documents/{document_id}/extraction", response_model=DocumentOut)
+def submit_browser_extraction(
+    document_id: str, payload: ExtractionSubmission, db: Session = Depends(get_db), user: User = Depends(require_roles(*UPLOAD_ROLES)),
+):
+    document = get_document_or_404(db, document_id)
+    submitted = {field.label: field for field in payload.fields if field.label in STANDARD_FIELD_LABELS}
+    document.fields.clear()
+    for label in STANDARD_FIELD_LABELS:
+        field = submitted.get(label)
+        value = field.value.strip() if field else ""
+        document.fields.append(ExtractedField(
+            label=label,
+            value=value,
+            original=(field.original.strip() if field else "Not detected")[:500],
+            confidence=field.confidence if value and field else 0,
+            valid=bool(value),
+            verified=False,
+        ))
+    db.flush()
+    detected = [field for field in document.fields if field.value]
+    field_confidence = sum(field.confidence for field in detected) / len(detected) if detected else 0
+    document.confidence = round(payload.confidence * .35 + field_confidence * .65, 2)
+    document.ocr_text = payload.text
+    document.ocr_engine = payload.engine
+    document.language = payload.language
+    document.status = "Needs review"
+    document.version += 1
+    document.updated_at = datetime.now(timezone.utc)
+    issues = validate_record(db, document)
+    for index, warning in enumerate(payload.warnings[:10], start=1):
+        issues.append({"code": f"ocr_warning_{index}", "field": "Document", "severity": "warning", "message": warning[:300]})
+    document.validation_issues = json.dumps(issues)
+    job = db.scalar(select(ProcessingJob).where(ProcessingJob.document_id == document.id))
+    if job:
+        job.status = "Completed"
+        job.stage = "Verification ready"
+        job.error = ""
+        job.attempts += 1
+        job.updated_at = datetime.now(timezone.utc)
+    add_revision(db, document, user.display_name, "Completed browser OCR and field extraction")
+    add_audit(db, "process", user.display_name, f"extracted {len(detected)} of {len(STANDARD_FIELD_LABELS)} fields", document.id, f"{payload.engine}; {payload.pages} page(s); {document.confidence:.1f}% confidence")
+    add_notification(db, "OCR processing complete", f"{document.id} is ready for assisted verification.", "warning" if issues else "success")
+    db.commit()
+    return serialize_document(get_document_or_404(db, document.id))
+
+
+@app.post("/api/documents/{document_id}/extraction/fail", response_model=DocumentOut)
+def fail_browser_extraction(
+    document_id: str, payload: ExtractionFailure, db: Session = Depends(get_db), user: User = Depends(require_roles(*UPLOAD_ROLES)),
+):
+    document = get_document_or_404(db, document_id)
+    document.status = "Needs review"
+    document.confidence = 0
+    document.ocr_engine = "OCR unavailable · manual verification"
+    document.validation_issues = json.dumps([{"code": "ocr_review_required", "field": "Document", "severity": "warning", "message": "Automated OCR could not complete; the securely stored source requires manual verification."}])
+    document.updated_at = datetime.now(timezone.utc)
+    job = db.scalar(select(ProcessingJob).where(ProcessingJob.document_id == document.id))
+    if job:
+        job.status = "Failed"
+        job.stage = "Manual verification required"
+        job.error = payload.message
+        job.attempts += 1
+        job.updated_at = datetime.now(timezone.utc)
+    add_revision(db, document, user.display_name, "OCR routed to manual verification")
+    add_audit(db, "flag", user.display_name, "online OCR requires manual review", document.id, payload.message)
+    db.commit()
+    return serialize_document(get_document_or_404(db, document.id))
+
+
+@app.get("/api/documents/{document_id}/processing")
+def processing_status(document_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(*READ_ROLES))):
+    get_document_or_404(db, document_id)
+    job = db.scalar(select(ProcessingJob).where(ProcessingJob.document_id == document_id))
+    if not job:
+        return {"document_id": document_id, "status": "Not tracked", "stage": "Imported record", "progress": 100}
+    progress = 100 if job.status in {"Completed", "Failed"} else 55 if job.status == "Running" else 10
+    return {"document_id": document_id, "status": job.status, "stage": job.stage, "progress": progress, "attempts": job.attempts, "error": job.error}
 
 
 @app.get("/api/documents/{document_id}/file")

@@ -1,28 +1,39 @@
 # Dhara — Intelligent Land Records
 
-Dhara is a working vertical-slice MVP for intelligent land-record digitization and validation. It includes a React application and a FastAPI service backed by SQLite locally or PostgreSQL in deployed environments.
+Dhara is a deployed full-stack prototype for intelligent land-record digitization and validation. It has a React application, a Cloudflare Worker-compatible hosted API backed by D1 and R2, and an optional FastAPI/PostgreSQL deployment profile.
 
 ## Included in the MVP
 
 - Operational dashboard with digitization and AI-accuracy metrics
-- JWT authentication with five enforced user roles
+- PBKDF2 authentication, revocable sessions, persistent rate limiting, government OpenID Connect integration, and five enforced user roles
 - Batch PDF/image intake with content validation and optional ClamAV scanning
-- AES-256-GCM encrypted document storage and SHA-256 integrity checks
+- AES-256-GCM protected document storage and SHA-256 integrity checks
 - Recoverable database-backed processing jobs with retry tracking
-- PDF text-layer extraction and optional enhanced Tesseract image OCR
-- Rule-based extraction into a canonical 12-field schema covering owner, ownership, survey, khasra, khata, area, jurisdiction, classification, mutation, and registration data
+- Online PDF text-layer extraction plus enhanced multilingual Tesseract.js OCR for scans and images
+- Multiscript extraction into a canonical 12-field schema covering owner, ownership, survey, khasra, khata, area, jurisdiction, classification, mutation, and registration data
 - Side-by-side source document and extracted-field verification
 - Confidence scoring, required-field rules, area checks, and duplicate warnings
 - Searchable land-record repository
-- Database-backed GeoJSON cadastral parcel view
+- Database-backed GeoJSON cadastral parcel view, validated parcel import, record linking, and officer editing
 - CSV and GeoJSON exports
 - Persisted notifications, corrections, approvals, rejections, and record versions
-- Administrator user lifecycle controls and deployment integration readiness
-- Per-record canonical JSON for LRMS/DILRMP adapters and JSONL correction-data export for governed model retraining
+- Administrator user lifecycle controls, integration health tests, idempotent record synchronization, and integration run history
+- Per-record canonical JSON for LRMS/DILRMP/registration/GIS adapters, external validation hooks, and notification gateway delivery
+- Human-verified correction memory that reuses confirmed language- and field-specific patterns and exposes evaluation metrics
+- Privacy-preserving citizen request and tracking portal with encrypted contact and request details
+- Daily protected database backups, retention cleanup, manual backup controls, and operational health metrics
 - HMAC-SHA256 chained audit events with integrity verification
 - Responsive navigation for desktop, tablet, and mobile
 
-Uploaded files are encrypted under generated storage names in `data/uploads`, and structured records are stored in `data/dhara.db`. Both paths are ignored by Git. The API never trusts an uploaded filename as a storage path.
+Hosted uploads are encrypted before being written to private R2 objects; structured records, processing state, audit data, corrections, sessions, integration runs, and citizen requests persist in D1. The FastAPI profile encrypts generated storage files in `data/uploads` and stores records in SQLite or PostgreSQL. Neither runtime trusts an uploaded filename as a storage path.
+
+## Online prototype
+
+The owner-private production deployment is available at:
+
+`https://dhara-land-records-india.aditipandey09.chatgpt.site`
+
+Online OCR runs on the operator's device so document pixels are not sent to an additional OCR API. Tesseract language assets are loaded only when processing starts, and the extracted text and structured result are persisted through the authenticated API.
 
 ## Run locally
 
@@ -73,7 +84,7 @@ Copy `.env.example` values into a secure environment and replace every developme
 docker compose up --build
 ```
 
-This starts PostgreSQL and the application at `http://localhost:8000`. The container includes Poppler plus English and Hindi Tesseract packs.
+This starts PostgreSQL and the application at `http://localhost:8000`. The container includes Poppler and Tesseract packs for all languages listed above.
 
 ## Tests
 
@@ -81,17 +92,20 @@ This starts PostgreSQL and the application at `http://localhost:8000`. The conta
 npm run build
 .venv/bin/python -m pytest -q
 npm run test:ui
+BASE_URL=http://127.0.0.1:4173 npm run test:ocr-ui
 ```
 
-The UI smoke test uses Chrome and checks login, live dashboard data, complete record details, the 12-field schema, GIS loading, audit navigation, administrator controls, and browser-console errors.
+The browser tests check login, dashboard data, complete records, the 12-field schema, GIS, audit navigation, administrator controls, citizen services, browser-console errors, and a real OCR upload with extracted owner and khasra values.
 
-## Next implementation phase
+## External activation inputs
 
-The remaining items require external infrastructure, agency credentials, or labelled training data:
+The software paths are implemented, but the following integrations remain inactive until their owners supply external resources:
 
-1. Government SSO and identity-provider integration.
-2. S3/MinIO key-management integration and a deployed ClamAV service.
-3. Trained layout and handwriting models with state-specific benchmark datasets.
-4. Agency-specific authentication and field mappings for the provided LRMS, DILRMP, registration, and notification endpoints. The canonical integration API and configuration status are implemented.
-5. GeoServer/PostGIS cadastral services and authoritative survey layers.
-6. Multi-node workers, backups, disaster recovery, centralized monitoring, and security accreditation.
+1. An OpenID Connect issuer, client ID, client secret, redirect registration, and authorized official email mappings for government SSO.
+2. Agency base URLs, credentials, schemas, and sandbox access for LRMS, DILRMP, registration, GeoServer, and notification delivery.
+3. An HTTPS malware-scanning service if hosted antivirus is required in addition to file-signature validation.
+4. Authoritative cadastral GeoJSON/GeoServer layers and jurisdiction master data for the target deployment.
+5. Labelled, legally usable state-specific printed and handwriting datasets for trained-model benchmarking or replacement of the included OCR engine.
+6. The hosting authority's backup destination, retention policy, disaster-recovery targets, monitoring service, and security-accreditation process.
+
+These are activation and governance dependencies rather than missing application routes. Until configured, the administration screen reports each connector as `Needs endpoint` and internal validation continues without fabricating an external verification result.

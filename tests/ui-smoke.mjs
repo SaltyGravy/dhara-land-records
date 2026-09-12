@@ -3,12 +3,13 @@ import puppeteer from 'puppeteer-core'
 const executablePath = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const browser = await puppeteer.launch({ executablePath, headless: true, args: ['--no-sandbox'] })
 const page = await browser.newPage()
+const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
 await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 })
 const errors = []
 page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
 page.on('pageerror', error => errors.push(error.message))
 
-await page.goto('http://localhost:5173', { waitUntil: 'networkidle0' })
+await page.goto(baseUrl, { waitUntil: 'networkidle0' })
 await page.waitForSelector('.login-submit')
 await page.click('.login-submit')
 await page.waitForSelector('.sidebar', { timeout: 10000 })
@@ -56,6 +57,12 @@ if (await page.$$eval('.user-row', elements => elements.length) < 5) throw new E
 await clickNavigation('Overview')
 await page.waitForSelector('.metrics-grid')
 await page.screenshot({ path: '/tmp/dhara-dashboard.png', fullPage: true })
+
+const citizenPage = await browser.newPage()
+await citizenPage.goto(`${baseUrl}/citizen`, { waitUntil: 'networkidle0' })
+await citizenPage.waitForSelector('.citizen-form')
+if (!await citizenPage.$eval('.citizen-hero h1', element => element.textContent?.includes('land-record request'))) throw new Error('Citizen service portal did not load')
+await citizenPage.close()
 
 await browser.close()
 if (errors.length) throw new Error(`Browser console errors:\n${errors.join('\n')}`)

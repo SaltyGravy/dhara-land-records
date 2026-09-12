@@ -33,6 +33,7 @@ export default defineConfig(async () => {
           d1_databases: d1 ? [{ binding: d1, database_name: 'dhara-records', database_id: PLACEHOLDER_DATABASE_ID }] : [],
           r2_buckets: r2 ? [{ binding: r2, bucket_name: 'dhara-documents' }] : [],
           assets: { binding: 'ASSETS', not_found_handling: 'single-page-application', run_worker_first: ['/api/*'] },
+          triggers: { crons: ['0 2 * * *'] },
         },
       }),
     ],

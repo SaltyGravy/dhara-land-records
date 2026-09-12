@@ -8,7 +8,7 @@ import {
   Sparkles, Upload, UserRound, UsersRound, X, XCircle,
 } from 'lucide-react'
 import { activity, districts, documents as initialDocuments, extractedFields, type DocumentStatus, type ExtractedField, type LandDocument } from './data'
-import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type NotificationItem, type ParcelFeature, type RecordVersion } from './api'
+import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion } from './api'
 
 type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'audit' | 'settings'
 
@@ -36,11 +36,13 @@ const StatusBadge = ({ status }: { status: DocumentStatus }) => {
   return <span className={`status status-${status.toLowerCase().replace(' ', '-')}`}>{icon}{status}</span>
 }
 
-function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => Promise<void> }) {
+function LoginScreen({ onLogin, initialError = '' }: { onLogin: (user: AuthUser) => Promise<void>; initialError?: string }) {
   const [username, setUsername] = useState('admin@dhara.gov.in')
   const [password, setPassword] = useState('Dhara@2026')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(initialError)
+  const [ssoConfigured, setSsoConfigured] = useState(false)
+  useEffect(() => { api.oidcStatus().then(status => setSsoConfigured(status.configured)).catch(() => undefined) }, [])
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
     setLoading(true)
@@ -49,10 +51,42 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => Promise<void> }
     catch (loginError) { setError(loginError instanceof Error ? loginError.message : 'Sign in failed') }
     finally { setLoading(false) }
   }
+  const startSso = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const { authorization_url } = await api.beginOidc()
+      window.location.assign(authorization_url)
+    } catch (ssoError) {
+      setError(ssoError instanceof Error ? ssoError.message : 'Government SSO could not be started')
+      setLoading(false)
+    }
+  }
   return <main className="login-screen">
     <section className="login-story"><div className="login-brand"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>भूमि अभिलेख</small></span></div><div className="login-message"><span className="eyebrow">INTELLIGENT LAND ADMINISTRATION</span><h1>Trusted records.<br/>Transparent governance.</h1><p>Securely digitize, validate, and connect legacy land records across languages, districts, and cadastral maps.</p><div className="login-assurance"><span><ShieldCheck size={18}/>Encrypted documents</span><span><FileCheck2 size={18}/>Human-verified accuracy</span><span><History size={18}/>Complete audit history</span></div></div><small>Uttar Pradesh Land Records Mission · Authorized access only</small></section>
-    <section className="login-panel"><form onSubmit={submit}><div className="login-emblem"><ShieldCheck size={26}/></div><span className="eyebrow">SECURE OFFICIAL PORTAL</span><h2>Sign in to Dhara</h2><p>Use your authorized departmental account.</p><label>Email address<input type="email" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" required/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required/></label>{error && <div className="login-error"><AlertTriangle size={15}/>{error}</div>}<button className="btn primary login-submit" disabled={loading}>{loading ? <><RefreshCcw size={17} className="spin"/>Signing in…</> : <><LogIn size={17}/>Sign in securely</>}</button><div className="demo-credentials"><strong>Development account</strong><span>Administrator credentials are pre-filled. Change the demo password before deployment.</span></div></form></section>
+    <section className="login-panel"><form onSubmit={submit}><div className="login-emblem"><ShieldCheck size={26}/></div><span className="eyebrow">SECURE OFFICIAL PORTAL</span><h2>Sign in to Dhara</h2><p>Use your authorized departmental account.</p>{ssoConfigured && <button type="button" className="btn secondary login-submit" disabled={loading} onClick={startSso}><ShieldCheck size={17}/>Government SSO</button>}<label>Email address<input type="email" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" required/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required/></label>{error && <div className="login-error"><AlertTriangle size={15}/>{error}</div>}<button className="btn primary login-submit" disabled={loading}>{loading ? <><RefreshCcw size={17} className="spin"/>Signing in…</> : <><LogIn size={17}/>Sign in securely</>}</button><a className="citizen-link" href="/citizen"><UserRound size={16}/>Citizen services and request tracking</a><div className="demo-credentials"><strong>Prototype account</strong><span>Administrator credentials are pre-filled until government SSO is configured.</span></div></form></section>
   </main>
+}
+
+function CitizenPortal() {
+  const [form, setForm] = useState({ request_type: 'Certified copy', record_id: '', applicant_name: '', contact: '', details: '', consent: false })
+  const [tracking, setTracking] = useState({ requestId: '', token: '' })
+  const [result, setResult] = useState<{ request_id?: string; tracking_token?: string; status: string; resolution?: string } | null>(null)
+  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(false)
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); setLoading(true); setMessage('')
+    try { const response = await api.submitCitizenRequest(form); setResult(response); setTracking({ requestId: response.request_id || '', token: response.tracking_token || '' }); setMessage('Request submitted. Save the tracking token; it is shown only once.') }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Request could not be submitted.') }
+    finally { setLoading(false) }
+  }
+  const check = async (event: React.FormEvent) => {
+    event.preventDefault(); setLoading(true); setMessage('')
+    try { setResult(await api.citizenRequestStatus(tracking.requestId, tracking.token)) }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Request status could not be loaded.') }
+    finally { setLoading(false) }
+  }
+  return <main className="citizen-portal"><header><a className="brand" href="/"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>नागरिक सेवाएं</small></span></a><a className="btn secondary" href="/"><LockKeyhole size={16}/>Official sign-in</a></header><section className="citizen-hero"><span className="eyebrow">CITIZEN LAND RECORD SERVICES</span><h1>Submit and track a land-record request</h1><p>Request a certified copy, check a digitization record, report a correction, or register an ownership dispute without exposing sensitive records publicly.</p></section><section className="citizen-grid"><form className="card citizen-form" onSubmit={submit}><div className="card-heading"><div><span>NEW REQUEST</span><h3>Citizen service application</h3></div><FileText size={20}/></div><label>Request type<select value={form.request_type} onChange={event => setForm({...form, request_type:event.target.value})}><option>Certified copy</option><option>Record status</option><option>Correction request</option><option>Ownership dispute</option></select></label><label>Land record ID (if known)<input placeholder="LR-2026-04182" value={form.record_id} onChange={event => setForm({...form, record_id:event.target.value})}/></label><label>Applicant name<input required value={form.applicant_name} onChange={event => setForm({...form, applicant_name:event.target.value})}/></label><label>Email or mobile number<input required value={form.contact} onChange={event => setForm({...form, contact:event.target.value})}/></label><label>Request details<textarea value={form.details} onChange={event => setForm({...form, details:event.target.value})} rows={4}/></label><label className="consent"><input type="checkbox" checked={form.consent} onChange={event => setForm({...form, consent:event.target.checked})}/><span>I consent to protected processing of the information supplied for this request.</span></label><button className="btn primary" disabled={loading}>{loading ? <RefreshCcw className="spin" size={17}/> : <FileCheck2 size={17}/>}Submit request</button></form><div className="citizen-side"><form className="card citizen-form" onSubmit={check}><div className="card-heading"><div><span>TRACK REQUEST</span><h3>Application status</h3></div><Search size={20}/></div><label>Request ID<input required value={tracking.requestId} onChange={event => setTracking({...tracking, requestId:event.target.value})}/></label><label>Private tracking token<input required type="password" value={tracking.token} onChange={event => setTracking({...tracking, token:event.target.value})}/></label><button className="btn secondary" disabled={loading}>Check status</button></form>{message && <div className="citizen-message"><ShieldCheck size={18}/>{message}</div>}{result && <div className="card citizen-result"><span className="eyebrow">REQUEST STATUS</span><h3>{result.request_id || tracking.requestId}</h3><StatusBadge status={(result.status === 'Resolved' ? 'Verified' : result.status === 'Rejected' ? 'Rejected' : 'Needs review') as DocumentStatus}/>{result.tracking_token && <label>Tracking token<strong>{result.tracking_token}</strong></label>}{result.resolution && <p>{result.resolution}</p>}</div>}</div></section></main>
 }
 
 function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobileOpen, user, onLogout, reviewCount }: { page: Page; setPage: (p: Page) => void; collapsed: boolean; setCollapsed: (v: boolean) => void; mobileOpen: boolean; setMobileOpen: (v: boolean) => void; user: AuthUser; onLogout: () => void; reviewCount: number }) {
@@ -155,7 +189,8 @@ function Metric({ title, value, detail, icon: Icon, tone, progress }: { title: s
 function VolumeChart({ data }: { data?: ApiStats['daily_volume'] }) {
   const values = data?.length ? data.map(item => item.count) : [48, 61, 55, 76, 68, 88, 82, 105, 96, 121, 113, 134, 128, 147]
   const max = Math.max(...values, 1)
-  const points = values.map((v, i) => `${(i / (values.length - 1)) * 100},${100 - (v / max) * 82}`).join(' ')
+  const chartDivisor = Math.max(values.length - 1, 1)
+  const points = values.map((v, i) => `${(i / chartDivisor) * 100},${100 - (v / max) * 82}`).join(' ')
   const area = `0,100 ${points} 100,100`
   return <div className="chart-card card">
     <div className="card-heading"><div><span>PROCESSING VOLUME</span><h3>Documents digitized</h3></div><span className="period">Last 14 days</span></div>
@@ -166,7 +201,7 @@ function VolumeChart({ data }: { data?: ApiStats['daily_volume'] }) {
         <defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#187667" stopOpacity=".22"/><stop offset="100%" stopColor="#187667" stopOpacity="0"/></linearGradient></defs>
         <polygon points={area} fill="url(#area)" />
         <polyline points={points} fill="none" stroke="#187667" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        {values.map((v, i) => <circle key={i} cx={(i / (values.length - 1)) * 100} cy={100 - (v / max) * 82} r="1.1" fill="#fff" stroke="#187667" strokeWidth=".7" vectorEffect="non-scaling-stroke" />)}
+        {values.map((v, i) => <circle key={i} cx={(i / chartDivisor) * 100} cy={100 - (v / max) * 82} r="1.1" fill="#fff" stroke="#187667" strokeWidth=".7" vectorEffect="non-scaling-stroke" />)}
       </svg>
       <div className="x-labels"><span>{data?.[0]?.date.slice(5) || '28 Aug'}</span><span>{data?.[3]?.date.slice(5) || '31 Aug'}</span><span>{data?.[6]?.date.slice(5) || '3 Sep'}</span><span>{data?.[9]?.date.slice(5) || '6 Sep'}</span><span>{data?.[13]?.date.slice(5) || '10 Sep'}</span></div>
     </div>
@@ -250,6 +285,7 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
   const [documentType, setDocumentType] = useState('Khasra / Khatauni')
   const [language, setLanguage] = useState('Auto-detect')
   const [completedCount, setCompletedCount] = useState(0)
+  const [stageDetail, setStageDetail] = useState('Ready for secure intake')
   const steps = ['Image enhancement', 'Script detection', 'OCR & handwriting', 'Field extraction', 'Rule validation']
 
   const acceptFiles = (selected?: FileList | File[]) => { if (selected) { setFiles(Array.from(selected).slice(0, 20)); setStep(0); setCompletedCount(0) } }
@@ -258,26 +294,36 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
     setStep(0)
     setError('')
     setProcessing(true)
-    const animation = window.setInterval(() => setStep(current => Math.min(current + 1, steps.length - 1)), 750)
     try {
       const queued = await api.uploadBatch(files, { state: 'Uttar Pradesh', district, documentType, language })
+      const { recognizeLandRecord } = await import('./ocr')
       const processed: LandDocument[] = []
-      for (const queuedDocument of queued) {
+      const failures: string[] = []
+      for (let index = 0; index < queued.length; index += 1) {
+        const queuedDocument = queued[index]
         let document = queuedDocument
-        for (let attempt = 0; attempt < 60 && document.status === 'Processing'; attempt += 1) {
-          await new Promise(resolve => window.setTimeout(resolve, 500))
-          document = await api.document(document.id)
+        try {
+          const result = await recognizeLandRecord(files[index], language, district, (stage, percent) => {
+            setStageDetail(`${files[index].name}: ${stage}`)
+            setStep(Math.min(steps.length - 1, Math.floor(percent / (100 / steps.length))))
+          })
+          document = await api.submitExtraction(queuedDocument.id, result)
+          if (result.warnings.length) failures.push(...result.warnings.map(warning => `${files[index].name}: ${warning}`))
+        } catch (ocrError) {
+          const message = ocrError instanceof Error ? ocrError.message : 'Online OCR failed'
+          failures.push(`${files[index].name}: ${message}`)
+          document = await api.failExtraction(queuedDocument.id, message).catch(() => queuedDocument)
         }
         processed.push(document)
         setCompletedCount(processed.length)
       }
-      if (processed.some(document => document.status === 'Processing')) throw new Error('Some files are still queued. They remain safely stored and will appear in the repository.')
       setStep(steps.length)
+      setStageDetail('Processing complete')
       processed.forEach(onAdded)
+      if (failures.length) setError(`Completed with review notes: ${failures.slice(0, 3).join(' · ')}`)
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : 'Upload failed')
     } finally {
-      window.clearInterval(animation)
       setProcessing(false)
     }
   }
@@ -295,11 +341,11 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
       <div className="section-title"><span className="number">2</span><div><h3>Record context</h3><p>Helps the AI apply the correct language and validation rules</p></div></div>
       <div className="form-grid"><label>State<select defaultValue="Uttar Pradesh"><option>Uttar Pradesh</option></select></label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}><option>Varanasi</option><option>Lucknow</option><option>Prayagraj</option></select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
       {error && <div className="upload-error"><AlertTriangle size={16}/>{error}</div>}
-      <div className="upload-footer"><span><LockKeyhole size={15}/>AES-256-GCM encrypted storage · Content validation enabled</span><button className="btn primary" disabled={!files.length || processing} onClick={start}>{processing ? <><RefreshCcw className="spin" size={17}/>Processing {completedCount}/{files.length}…</> : <><Sparkles size={17}/>Process {files.length > 1 ? `${files.length} documents` : 'document'}</>}</button></div>
+      <div className="upload-footer"><span><LockKeyhole size={15}/>AES-256-GCM protected storage · SHA-256 integrity · Content validation</span><button className="btn primary" disabled={!files.length || processing} onClick={start}>{processing ? <><RefreshCcw className="spin" size={17}/>Processing {completedCount}/{files.length}…</> : <><Sparkles size={17}/>Process {files.length > 1 ? `${files.length} documents` : 'document'}</>}</button></div>
     </div>
     <aside className="pipeline-card card"><div className="card-heading"><div><span>AI PIPELINE</span><h3>What happens next</h3></div></div>
       <div className="pipeline">{steps.map((s, i) => <div key={s} className={`${processing && i === step ? 'current' : ''} ${step > i ? 'complete' : ''}`}><span>{step > i ? <Check size={15}/> : i + 1}</span><div><strong>{s}</strong><small>{['Clean, deskew and restore scan','Identify Hindi, Urdu or English','Read printed and handwritten text','Map text to land-record fields','Cross-check values and duplicates'][i]}</small></div>{processing && i === step && <RefreshCcw size={15} className="spin"/>}</div>)}</div>
-      {processing && <div className="overall-progress"><div><span>Processing document</span><b>{Math.min(Math.round(step / steps.length * 100), 99)}%</b></div><div><i style={{ width: `${Math.min((step + .4) / steps.length * 100, 99)}%` }}/></div></div>}
+      {processing && <div className="overall-progress"><div><span>{stageDetail}</span><b>{Math.min(Math.round(step / steps.length * 100), 99)}%</b></div><div><i style={{ width: `${Math.min((step + .4) / steps.length * 100, 99)}%` }}/></div></div>}
       {!processing && step >= steps.length && <div className="success-box"><CheckCircle2 size={19}/><div><strong>Processing complete</strong><span>Record added to verification queue.</span></div></div>}
       <div className="privacy-note"><ShieldCheck size={19}/><div><strong>Protected document handling</strong><span>Files are content-validated, encrypted at rest, and every action is attributed in the audit log.</span></div></div>
     </aside>
@@ -451,14 +497,22 @@ function RecordsPage({ docs, onReview, onOpen }: { docs: LandDocument[]; onRevie
   </div>
 }
 
-function GisPage({ onOpenRecord }: { onOpenRecord: (id: string) => void }) {
+function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string) => void; canEdit: boolean; records: LandDocument[] }) {
   const [parcels, setParcels] = useState<ParcelFeature[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [query, setQuery] = useState('')
   const [zoom, setZoom] = useState(1)
-  useEffect(() => { api.parcels().then(collection => { setParcels(collection.features); setSelectedId(collection.features[0]?.id ?? null) }).catch(() => undefined) }, [])
+  const [editing, setEditing] = useState(false)
+  const [message, setMessage] = useState('')
+  const [form, setForm] = useState({ owner: '', classification: '', status: 'Needs review', record_id: '' })
+  const importInput = useRef<HTMLInputElement>(null)
+  const loadParcels = () => api.parcels().then(collection => { setParcels(collection.features); setSelectedId(current => current ?? collection.features[0]?.id ?? null) })
+  useEffect(() => { loadParcels().catch(() => undefined) }, [])
   const filtered = parcels.filter(parcel => `${parcel.properties.khasra} ${parcel.properties.owner} ${parcel.properties.village}`.toLowerCase().includes(query.toLowerCase()))
   const selected = parcels.find(parcel => parcel.id === selectedId) || filtered[0]
+  useEffect(() => {
+    if (selected) setForm({ owner: selected.properties.owner, classification: selected.properties.classification, status: selected.properties.status, record_id: selected.properties.record_id || '' })
+  }, [selected?.id])
   const allCoordinates = parcels.flatMap(parcel => parcel.geometry.coordinates[0])
   const xs = allCoordinates.map(point => point[0]), ys = allCoordinates.map(point => point[1])
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
@@ -467,9 +521,31 @@ function GisPage({ onOpenRecord }: { onOpenRecord: (id: string) => void }) {
     const coordinates = points(parcel).split(' ').map(value => value.split(',').map(Number))
     return { x: coordinates.reduce((sum, point) => sum + point[0], 0) / coordinates.length, y: coordinates.reduce((sum, point) => sum + point[1], 0) / coordinates.length }
   }
-  return <div className="gis-shell card"><div className="map-toolbar"><div className="search-box"><Search size={17}/><input placeholder="Find village, khasra or owner…" value={query} onChange={event => setQuery(event.target.value)}/></div><div><span className="parcel-count"><Filter size={16}/>{filtered.length} parcels</span><button className="btn secondary" onClick={() => api.exportParcels()}><MapPin size={16}/>GeoJSON</button></div></div>
-    <div className="map-body"><div className="map-canvas"><div className="road horizontal"><span>ग्राम मार्ग</span></div><div className="road vertical"/>{parcels.length ? <svg viewBox="0 0 500 450" preserveAspectRatio="xMidYMid meet" style={{transform:`scale(${zoom})`}}>{filtered.map(parcel => { const label = centre(parcel); return <g key={parcel.id} onClick={() => setSelectedId(parcel.id)} className={`parcel ${selected?.id === parcel.id ? 'selected' : ''} ${parcel.properties.status === 'Needs review' ? 'needs-review' : ''}`}><polygon points={points(parcel)}/><text x={label.x} y={label.y}>{parcel.properties.khasra}</text></g> })}</svg> : <div className="map-loading"><RefreshCcw className="spin"/>Loading cadastral parcels…</div>}<div className="map-controls"><button onClick={() => setZoom(value => Math.min(1.6, value + .15))} aria-label="Zoom in">+</button><button onClick={() => setZoom(value => Math.max(.7, value - .15))} aria-label="Zoom out">−</button></div><div className="map-legend"><span><i className="verified-land"/>Verified</span><span><i className="review-land"/>Needs review</span><span><i className="selected-land"/>Selected</span></div></div>
-      {selected && <aside className="parcel-panel"><div className="parcel-head"><span className="eyebrow">SELECTED PARCEL</span><h2>Khasra {selected.properties.khasra}</h2><StatusBadge status={selected.properties.status as DocumentStatus}/></div><div className="parcel-details"><label>Recorded owner<strong>{selected.properties.owner}</strong></label><label>Area<strong>{selected.properties.area} ha</strong></label><label>Classification<strong>{selected.properties.classification}</strong></label><label>Village<strong>{selected.properties.village}</strong></label><label>Tehsil / District<strong>{selected.properties.tehsil} / {selected.properties.district}</strong></label><label>Linked record<strong className="link-text">{selected.properties.record_id || 'Not linked'}</strong></label></div><div className="boundary-check"><CheckCircle2 size={19}/><div><strong>Persisted GeoJSON boundary</strong><span>Parcel geometry is loaded from the spatial records API.</span></div></div><button className="btn primary full" disabled={!selected.properties.record_id} onClick={() => selected.properties.record_id && onOpenRecord(selected.properties.record_id)}><FileText size={16}/>{selected.properties.record_id ? 'Open complete record' : 'No linked record'}</button></aside>}
+  const saveParcel = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!selected) return
+    setMessage('')
+    try {
+      const updated = await api.updateParcel(selected.id, { ...form, record_id: form.record_id || null })
+      setParcels(current => current.map(parcel => parcel.id === updated.id ? updated : parcel))
+      setEditing(false)
+      setMessage('Parcel and record link saved.')
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Parcel could not be updated.') }
+  }
+  const importGeoJson = async (file?: File) => {
+    if (!file) return
+    setMessage('Validating cadastral GeoJSON…')
+    try {
+      const result = await api.importParcels(JSON.parse(await file.text()))
+      await loadParcels()
+      setMessage(`${result.imported} validated parcel boundaries imported.`)
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'GeoJSON import failed.') }
+    if (importInput.current) importInput.current.value = ''
+  }
+  return <div className="gis-shell card"><div className="map-toolbar"><div className="search-box"><Search size={17}/><input placeholder="Find village, khasra or owner…" value={query} onChange={event => setQuery(event.target.value)}/></div><div><span className="parcel-count"><Filter size={16}/>{filtered.length} parcels</span>{canEdit && <><input ref={importInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={event => importGeoJson(event.target.files?.[0])}/><button className="btn secondary" onClick={() => importInput.current?.click()}><Upload size={16}/>Import</button></>}<button className="btn secondary" onClick={() => api.exportParcels()}><MapPin size={16}/>GeoJSON</button></div></div>
+    {message && <div className="gis-message">{message}</div>}
+    <div className="map-body"><div className="map-canvas"><div className="road horizontal"><span>ग्राम मार्ग</span></div><div className="road vertical"/>{parcels.length ? <svg viewBox="0 0 500 450" preserveAspectRatio="xMidYMid meet" style={{transform:`scale(${zoom})`}}>{filtered.map(parcel => { const label = centre(parcel); return <g key={parcel.id} onClick={() => { setSelectedId(parcel.id); setEditing(false) }} className={`parcel ${selected?.id === parcel.id ? 'selected' : ''} ${parcel.properties.status === 'Needs review' ? 'needs-review' : ''}`}><polygon points={points(parcel)}/><text x={label.x} y={label.y}>{parcel.properties.khasra}</text></g> })}</svg> : <div className="map-loading"><RefreshCcw className="spin"/>Loading cadastral parcels…</div>}<div className="map-controls"><button onClick={() => setZoom(value => Math.min(1.6, value + .15))} aria-label="Zoom in">+</button><button onClick={() => setZoom(value => Math.max(.7, value - .15))} aria-label="Zoom out">−</button></div><div className="map-legend"><span><i className="verified-land"/>Verified</span><span><i className="review-land"/>Needs review</span><span><i className="selected-land"/>Selected</span></div></div>
+      {selected && <aside className="parcel-panel"><div className="parcel-head"><span className="eyebrow">SELECTED PARCEL</span><h2>Khasra {selected.properties.khasra}</h2><StatusBadge status={selected.properties.status as DocumentStatus}/></div>{editing ? <form className="parcel-edit-form" onSubmit={saveParcel}><label>Recorded owner<input value={form.owner} onChange={event => setForm({...form, owner:event.target.value})} required/></label><label>Classification<input value={form.classification} onChange={event => setForm({...form, classification:event.target.value})} required/></label><label>Status<select value={form.status} onChange={event => setForm({...form, status:event.target.value})}><option>Verified</option><option>Needs review</option><option>Rejected</option></select></label><label>Linked record<select value={form.record_id} onChange={event => setForm({...form, record_id:event.target.value})}><option value="">Not linked</option>{records.map(record => <option key={record.id}>{record.id}</option>)}</select></label><div><button type="button" className="btn secondary" onClick={() => setEditing(false)}>Cancel</button><button className="btn primary">Save parcel</button></div></form> : <><div className="parcel-details"><label>Recorded owner<strong>{selected.properties.owner}</strong></label><label>Area<strong>{selected.properties.area} ha</strong></label><label>Classification<strong>{selected.properties.classification}</strong></label><label>Village<strong>{selected.properties.village}</strong></label><label>Tehsil / District<strong>{selected.properties.tehsil} / {selected.properties.district}</strong></label><label>Linked record<strong className="link-text">{selected.properties.record_id || 'Not linked'}</strong></label></div><div className="boundary-check"><CheckCircle2 size={19}/><div><strong>Validated GeoJSON boundary</strong><span>Parcel geometry is loaded from the spatial records API.</span></div></div>{canEdit && <button className="btn secondary full" onClick={() => setEditing(true)}><Settings size={16}/>Edit and link parcel</button>}<button className="btn primary full" disabled={!selected.properties.record_id} onClick={() => selected.properties.record_id && onOpenRecord(selected.properties.record_id)}><FileText size={16}/>{selected.properties.record_id ? 'Open complete record' : 'No linked record'}</button></>}</aside>}
     </div>
   </div>
 }
@@ -502,10 +578,12 @@ function SettingsPage() {
   const [integrations, setIntegrations] = useState<IntegrationStatus[]>([])
   const [showForm, setShowForm] = useState(false)
   const [error, setError] = useState('')
+  const [integrationMessage, setIntegrationMessage] = useState<Record<string, string>>({})
+  const [learning, setLearning] = useState<LearningMetrics | null>(null)
   const [form, setForm] = useState({ display_name: '', username: '', password: '', role: 'Viewer' as AuthUser['role'] })
   const roles: AuthUser['role'][] = ['Administrator', 'Verification Officer', 'Data Operator', 'Auditor', 'Viewer']
   useEffect(() => {
-    Promise.all([api.users(), api.integrations()]).then(([officials, services]) => { setUsers(officials); setIntegrations(services) }).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Could not load administration data'))
+    Promise.all([api.users(), api.integrations(), api.learningMetrics()]).then(([officials, services, metrics]) => { setUsers(officials); setIntegrations(services); setLearning(metrics) }).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Could not load administration data'))
   }, [])
   const create = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -524,13 +602,22 @@ function SettingsPage() {
       setUsers(current => current.map(user => user.id === updated.id ? updated : user))
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not update user') }
   }
+  const testIntegration = async (integration: IntegrationStatus) => {
+    setIntegrationMessage(current => ({ ...current, [integration.key]: 'Testing…' }))
+    try {
+      const result = await api.testIntegration(integration.key)
+      setIntegrationMessage(current => ({ ...current, [integration.key]: result.connected ? `Connected · HTTP ${result.status}` : 'Connection failed' }))
+    } catch (requestError) {
+      setIntegrationMessage(current => ({ ...current, [integration.key]: requestError instanceof Error ? requestError.message : 'Connection failed' }))
+    }
+  }
   return <div className="settings-layout">
     <section className="settings-main card"><div className="card-heading"><div><span>AUTHORIZED OFFICIALS</span><h3>User access</h3></div><button className="btn primary" onClick={() => setShowForm(value => !value)}><Plus size={16}/>{showForm ? 'Close form' : 'Add official'}</button></div>
       {error && <div className="upload-error settings-error"><AlertTriangle size={15}/>{error}</div>}
       {showForm && <form className="new-user-form" onSubmit={create}><label>Full name<input required value={form.display_name} onChange={event => setForm({...form, display_name:event.target.value})}/></label><label>Official email<input required type="email" value={form.username} onChange={event => setForm({...form, username:event.target.value})}/></label><label>Temporary password<input required minLength={10} type="password" value={form.password} onChange={event => setForm({...form, password:event.target.value})}/></label><label>Role<select value={form.role} onChange={event => setForm({...form, role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select></label><button className="btn primary">Create user</button></form>}
       <div className="user-list"><div className="user-list-head"><span>Official</span><span>Role</span><span>Status</span><span>Access</span></div>{users.map(target => <div className="user-row" key={target.id}><div><span className="avatar">{target.display_name.split(' ').map(word=>word[0]).join('').slice(0,2)}</span><p><b>{target.display_name}</b><small>{target.username}</small></p></div><select value={target.role} onChange={event => update(target,{role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select><span className={`status ${target.active ? 'status-verified' : 'status-rejected'}`}>{target.active ? 'Active' : 'Disabled'}</span><button className="btn secondary" onClick={() => update(target,{active:!target.active})}>{target.active ? 'Disable' : 'Enable'}</button></div>)}</div>
     </section>
-    <aside className="security-stack"><div className="card security-card"><LockKeyhole size={21}/><div><span>DOCUMENT STORAGE</span><strong>AES-256-GCM</strong><small>Authenticated encryption and SHA-256 integrity</small></div></div><div className="card security-card"><History size={21}/><div><span>AUDIT CHAIN</span><strong>HMAC-SHA256</strong><small>Tamper-evident linked event history</small></div></div><div className="card security-card"><UsersRound size={21}/><div><span>ACCESS MODEL</span><strong>5 enforced roles</strong><small>Server-side permissions on every protected API</small></div></div><div className="card integration-card"><div className="integration-head"><div><span>GOVERNMENT INTEGRATIONS</span><strong>Deployment readiness</strong></div><Database size={20}/></div>{integrations.map(integration => <div className="integration-row" key={integration.key}><span><b>{integration.key}</b><small>{integration.name}</small></span><i className={integration.configured ? 'configured' : ''}>{integration.configured ? 'Configured' : 'Needs endpoint'}</i></div>)}</div><div className="card learning-card"><Sparkles size={20}/><div><span>AI LEARNING LOOP</span><strong>Verified correction dataset</strong><small>Export officer corrections as JSONL for governed model evaluation and retraining.</small><button className="btn secondary full" onClick={() => api.exportCorrections()}>Export learning data</button></div></div></aside>
+    <aside className="security-stack"><div className="card security-card"><LockKeyhole size={21}/><div><span>DOCUMENT STORAGE</span><strong>Encrypted managed storage</strong><small>Private objects with SHA-256 integrity validation</small></div></div><div className="card security-card"><History size={21}/><div><span>AUDIT CHAIN</span><strong>HMAC-SHA256</strong><small>Tamper-evident linked event history</small></div></div><div className="card security-card"><UsersRound size={21}/><div><span>ACCESS MODEL</span><strong>5 enforced roles</strong><small>PBKDF2 passwords, revocable sessions and API rate limits</small></div></div><div className="card integration-card"><div className="integration-head"><div><span>GOVERNMENT INTEGRATIONS</span><strong>Deployment readiness</strong></div><Database size={20}/></div>{integrations.map(integration => <div className="integration-row" key={integration.key}><span><b>{integration.key}</b><small>{integration.name}{integrationMessage[integration.key] ? ` · ${integrationMessage[integration.key]}` : ''}</small></span>{integration.configured && integration.key !== 'sso' ? <button className="btn secondary" onClick={() => testIntegration(integration)}>Test</button> : <i className={integration.configured ? 'configured' : ''}>{integration.configured ? 'Configured' : 'Needs endpoint'}</i>}</div>)}</div><div className="card learning-card"><Sparkles size={20}/><div><span>AI LEARNING LOOP</span><strong>Verified correction dataset</strong><small>Export officer corrections as JSONL for governed model evaluation and retraining.</small><button className="btn secondary full" onClick={() => api.exportCorrections()}>Export learning data</button></div></div></aside>
   </div>
 }
 
@@ -549,6 +636,7 @@ function App() {
   const [recordDetailId, setRecordDetailId] = useState<string | null>(null)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [authError, setAuthError] = useState('')
 
   const refreshOperationalData = async (activeUser: AuthUser) => {
     const canReadAudit = ['Administrator', 'Verification Officer', 'Auditor'].includes(activeUser.role)
@@ -565,6 +653,13 @@ function App() {
   }
 
   useEffect(() => {
+    if (window.location.pathname === '/citizen') { setAuthLoading(false); return }
+    const ssoCode = new URLSearchParams(window.location.search).get('sso_code')
+    if (ssoCode) {
+      window.history.replaceState({}, document.title, window.location.pathname)
+      api.completeOidc(ssoCode).then(async sessionUser => { setUser(sessionUser); await refreshOperationalData(sessionUser) }).catch(error => { setAuthError(error instanceof Error ? error.message : 'Government SSO sign-in failed'); setUser(null) }).finally(() => setAuthLoading(false))
+      return
+    }
     if (!api.hasSession()) { setAuthLoading(false); return }
     api.me().then(async sessionUser => { setUser(sessionUser); await refreshOperationalData(sessionUser) }).catch(() => { api.logout(); setUser(null); setApiOnline(false) }).finally(() => setAuthLoading(false))
   }, [])
@@ -575,7 +670,7 @@ function App() {
     await refreshOperationalData(loggedInUser)
   }
   const logout = () => {
-    api.logout()
+    void api.logout()
     setUser(null)
     setApiOnline(false)
     setPage('overview')
@@ -620,13 +715,14 @@ function App() {
   const verificationDocument = docs.find(document => document.id === selectedDocumentId) || docs.find(document => document.status === 'Needs review') || docs[0]
   const detailDocument = docs.find(document => document.id === recordDetailId)
 
+  if (window.location.pathname === '/citizen') return <CitizenPortal/>
   if (authLoading) return <div className="app-loading"><span className="brand-mark"><span>ध</span></span><RefreshCcw className="spin"/>Preparing secure workspace…</div>
-  if (!user) return <LoginScreen onLogin={login}/>
+  if (!user) return <LoginScreen onLogin={login} initialError={authError}/>
 
   return <div className="app-shell">
     <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} user={user} onLogout={logout} reviewCount={stats?.needs_review || 0}/>
     <div className="main-shell"><Header page={page} onMenu={() => setMobileOpen(true)} apiOnline={apiOnline} notifications={notifications} onNotificationsChanged={setNotifications}/><main className={page === 'verification' ? 'verify-page' : ''}><PageHeading page={page} setPage={setPage} user={user}/>
-      {page === 'overview' && <Overview docs={docs} setPage={setPage} stats={stats} onReview={openVerification}/>} {page === 'upload' && <UploadPage onAdded={addDocument}/>} {page === 'verification' && <VerificationPage document={verificationDocument} onVerified={verify} onRejected={reject} onBack={() => setPage('records')} apiOnline={apiOnline}/>} {page === 'records' && <RecordsPage docs={docs} onReview={openVerification} onOpen={setRecordDetailId}/>} {page === 'gis' && <GisPage onOpenRecord={setRecordDetailId}/>} {page === 'audit' && <AuditPage events={auditEvents} integrity={auditIntegrity} canExport={['Administrator', 'Auditor'].includes(user.role)}/>} {page === 'settings' && <SettingsPage/>}
+      {page === 'overview' && <Overview docs={docs} setPage={setPage} stats={stats} onReview={openVerification}/>} {page === 'upload' && <UploadPage onAdded={addDocument}/>} {page === 'verification' && <VerificationPage document={verificationDocument} onVerified={verify} onRejected={reject} onBack={() => setPage('records')} apiOnline={apiOnline}/>} {page === 'records' && <RecordsPage docs={docs} onReview={openVerification} onOpen={setRecordDetailId}/>} {page === 'gis' && <GisPage onOpenRecord={setRecordDetailId} canEdit={['Administrator', 'Verification Officer'].includes(user.role)} records={docs}/>} {page === 'audit' && <AuditPage events={auditEvents} integrity={auditIntegrity} canExport={['Administrator', 'Auditor'].includes(user.role)}/>} {page === 'settings' && <SettingsPage/>}
     </main></div>
     {detailDocument && <RecordDetails document={detailDocument} user={user} onClose={() => setRecordDetailId(null)} onReview={openVerification}/>} 
     {toast && <div className="toast"><CheckCircle2 size={18}/>{toast}</div>}

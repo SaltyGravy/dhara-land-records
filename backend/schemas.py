@@ -20,6 +20,30 @@ class FieldUpdate(BaseModel):
     actor: str = Field(default="Priya Sharma", max_length=100)
 
 
+class ExtractionField(BaseModel):
+    id: int | None = None
+    label: str = Field(max_length=100)
+    value: str = Field(default="", max_length=500)
+    original: str = Field(default="Not detected", max_length=500)
+    confidence: float = Field(default=0, ge=0, le=100)
+    valid: bool = False
+    verified: bool = False
+
+
+class ExtractionSubmission(BaseModel):
+    text: str = Field(min_length=1, max_length=1_000_000)
+    engine: str = Field(default="Browser OCR", max_length=120)
+    language: str = Field(default="Unknown", max_length=60)
+    confidence: float = Field(default=0, ge=0, le=100)
+    fields: list[ExtractionField] = Field(default_factory=list, max_length=20)
+    pages: int = Field(default=1, ge=1, le=10_000)
+    warnings: list[str] = Field(default_factory=list, max_length=10)
+
+
+class ExtractionFailure(BaseModel):
+    message: str = Field(default="OCR could not recognize this source.", max_length=500)
+
+
 class DocumentOut(BaseModel):
     id: str
     owner: str
