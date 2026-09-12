@@ -1139,7 +1139,12 @@ export default {
   async fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url)
-      if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request)
+      if (!url.pathname.startsWith('/api/')) {
+        const asset = await env.ASSETS.fetch(request)
+        if (asset.status !== 404 || request.method !== 'GET') return asset
+        // Let React Router handle deep links such as /citizen.
+        return env.ASSETS.fetch(new Request(new URL('/', request.url), { headers: request.headers }))
+      }
       await ensureDatabase()
       await enforceRateLimit(request)
       return secure(await route(request))
