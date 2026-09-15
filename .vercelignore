@@ -1,0 +1,9 @@
+# `vercel --prod` uploads the local working directory as-is - it does NOT respect
+# .gitignore. Without this file, whatever happens to be sitting in a developer's
+# local data/ directory (test uploads, a dev SQLite db) gets bundled into the
+# production build and served as if it were real data. Confirmed this actually
+# happened: a local test upload ended up reachable on the live site.
+data/
+.venv/
+__pycache__/
+*.pyc

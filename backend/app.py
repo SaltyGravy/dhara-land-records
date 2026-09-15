@@ -20,7 +20,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .audit import append_and_commit, rebuild_chain, verify_chain
-from .database import Base, SessionLocal, engine, get_db
+from .database import DATABASE_URL, Base, SessionLocal, engine, get_db
 from .models import AuditEvent, Document, ExtractedField, FieldCorrection, Notification, NotificationReceipt, Parcel, PlotRow, ProcessingJob, RecordRevision, User
 from .migrations import upgrade_schema
 from .ocr import FIELD_RULES, detect_language, extract_fields, extract_text
@@ -29,7 +29,7 @@ from .schemas import (
     NotificationOut, ParcelUpdate, PlotRowOut, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
 )
 from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
-from .storage import encrypt_and_store, malware_scan, materialize_decrypted, read_and_decrypt, validate_document
+from .storage import BLOB_ENABLED, encrypt_and_store, malware_scan, materialize_decrypted, read_and_decrypt, validate_document
 from .validation import validate_record
 
 
@@ -284,7 +284,11 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         rebuild_chain(db)
         db.commit()
-    worker = None if os.getenv("VERCEL") else asyncio.create_task(job_worker())
+    # This legacy queue polls with a fresh DB session every ~0.35-1.25s, which is
+    # harmless against local SQLite but opens/exercises real connections fast enough
+    # to exhaust a pooled remote database (confirmed: hangs against Neon). It's also
+    # dead weight generally - OCR now runs client-side, not through this queue.
+    worker = None if os.getenv("VERCEL") or not DATABASE_URL.startswith("sqlite") else asyncio.create_task(job_worker())
     try:
         yield
     finally:
@@ -565,12 +569,15 @@ def get_document_file(document_id: str, db: Session = Depends(get_db), _: User =
     if not document.storage_name:
         raise HTTPException(status_code=404, detail="Source file is unavailable for this imported record")
     path = (UPLOAD_DIR / document.storage_name).resolve()
-    if path.parent != UPLOAD_DIR.resolve() or not path.exists():
+    # The local-directory containment/existence check only makes sense for the local-
+    # filesystem fallback; a Blob-backed read validates existence itself (BlobNotFoundError
+    # surfaces as the ValueError caught below).
+    if not BLOB_ENABLED and (path.parent != UPLOAD_DIR.resolve() or not path.exists()):
         raise HTTPException(status_code=404, detail="Source file not found")
     try:
         content = read_and_decrypt(path)
     except ValueError as exc:
-        raise HTTPException(status_code=500, detail="Stored file integrity check failed") from exc
+        raise HTTPException(status_code=404, detail="Source file not found") from exc
     if document.checksum_sha256 and not secrets.compare_digest(hashlib.sha256(content).hexdigest(), document.checksum_sha256):
         raise HTTPException(status_code=500, detail="Stored file checksum does not match its protected record")
     headers = {"Content-Disposition": f'inline; filename="{document.filename.replace(chr(34), "")}"', "Cache-Control": "private, no-store"}

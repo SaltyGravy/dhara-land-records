@@ -8,11 +8,20 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image, UnidentifiedImageError
+from vercel import blob as vercel_blob
+from vercel.blob.errors import BlobNotFoundError
 
 
 HEADER = b"DHARA1"
 KEY_MATERIAL = os.getenv("FILE_ENCRYPTION_KEY", os.getenv("TOKEN_SECRET", "development-only-change-this-secret"))
 ENCRYPTION_KEY = hashlib.sha256(KEY_MATERIAL.encode()).digest()
+
+# A local uploads directory (as used outside Vercel, or in Vercel's own ephemeral /tmp
+# fallback) does not survive a redeploy, a cold start on a different instance, or the
+# process simply being torn down - any file a real user uploads would vanish. Vercel Blob
+# is real persistent storage; use it whenever a token is configured, and only fall back to
+# the local filesystem (e.g. for local dev without a Blob store) when it isn't.
+BLOB_ENABLED = bool(os.getenv("BLOB_READ_WRITE_TOKEN"))
 
 
 def validate_document(content: bytes, extension: str) -> None:
@@ -47,12 +56,24 @@ def malware_scan(content: bytes) -> str:
 def encrypt_and_store(destination: Path, content: bytes) -> str:
     nonce = os.urandom(12)
     encrypted = AESGCM(ENCRYPTION_KEY).encrypt(nonce, content, None)
-    destination.write_bytes(HEADER + nonce + encrypted)
+    payload = HEADER + nonce + encrypted
+    if BLOB_ENABLED:
+        # destination.name (a server-generated "<hex>.dhara" key, never derived from the
+        # uploaded filename) doubles as the Blob pathname - callers don't need to change.
+        vercel_blob.put(destination.name, payload, access="private", content_type="application/octet-stream", overwrite=True)
+    else:
+        destination.write_bytes(payload)
     return hashlib.sha256(content).hexdigest()
 
 
 def read_and_decrypt(path: Path) -> bytes:
-    payload = path.read_bytes()
+    if BLOB_ENABLED:
+        try:
+            payload = vercel_blob.get(path.name, access="private").content
+        except BlobNotFoundError as exc:
+            raise ValueError("Stored document is invalid") from exc
+    else:
+        payload = path.read_bytes()
     if not payload.startswith(HEADER) or len(payload) < len(HEADER) + 13:
         raise ValueError("Stored document is invalid")
     offset = len(HEADER)

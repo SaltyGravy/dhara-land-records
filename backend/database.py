@@ -21,6 +21,15 @@ if not DATABASE_URL:
         DEFAULT_DB = PROJECT_ROOT / "data" / "dhara.db"
         DEFAULT_DB.parent.mkdir(parents=True, exist_ok=True)
         DATABASE_URL = f"sqlite:///{DEFAULT_DB}"
+
+# Providers commonly hand out a bare "postgres://" or "postgresql://" URL, which
+# makes SQLAlchemy default to the psycopg2 dialect - only psycopg (v3) is a
+# dependency here, so pin the dialect explicitly or connections fail at import time.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
 engine_options = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False}
