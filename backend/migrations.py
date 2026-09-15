@@ -13,6 +13,7 @@ DOCUMENT_COLUMNS = {
     "checksum_sha256": "VARCHAR(64) NOT NULL DEFAULT ''",
     "validation_issues": "TEXT NOT NULL DEFAULT '[]'",
     "version": "INTEGER NOT NULL DEFAULT 1",
+    "batch_id": "VARCHAR(32) NULL",
 }
 
 AUDIT_COLUMNS = {

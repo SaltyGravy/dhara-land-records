@@ -303,21 +303,24 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
       const failures: string[] = []
       for (let index = 0; index < queued.length; index += 1) {
         const queuedDocument = queued[index]
-        let document = queuedDocument
+        // A single uploaded file can yield several records (one per plot in a multi-plot
+        // register), so this tracks documents produced, not files - completedCount below
+        // is tracked separately against the file loop for the "N/total files" progress label.
+        let documents: LandDocument[] = [queuedDocument]
         try {
           const result = await recognizeLandRecord(files[index], language, district, (stage, percent) => {
             setStageDetail(`${files[index].name}: ${stage}`)
             setStep(Math.min(steps.length - 1, Math.floor(percent / (100 / steps.length))))
           })
-          document = await api.submitExtraction(queuedDocument.id, result)
+          documents = await api.submitExtraction(queuedDocument.id, result)
           if (result.warnings.length) failures.push(...result.warnings.map(warning => `${files[index].name}: ${warning}`))
         } catch (ocrError) {
           const message = ocrError instanceof Error ? ocrError.message : 'Online OCR failed'
           failures.push(`${files[index].name}: ${message}`)
-          document = await api.failExtraction(queuedDocument.id, message).catch(() => queuedDocument)
+          documents = [await api.failExtraction(queuedDocument.id, message).catch(() => queuedDocument)]
         }
-        processed.push(document)
-        setCompletedCount(processed.length)
+        processed.push(...documents)
+        setCompletedCount(index + 1)
       }
       setStep(steps.length)
       setStageDetail('Processing complete')

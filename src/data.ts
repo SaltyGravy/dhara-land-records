@@ -27,6 +27,10 @@ export interface LandDocument {
   plot_rows?: PlotRow[]
   validation_issues?: ValidationIssue[]
   version?: number
+  // Set when this record is one of several created from a single register that listed
+  // multiple plots (Khata/Khasra rows) - siblings share this value (the group's first/
+  // primary record id) and the same uploaded source file.
+  batch_id?: string | null
 }
 
 export interface ValidationIssue {

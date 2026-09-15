@@ -209,7 +209,9 @@ export const api = {
     appendContext(form, context)
     return request<LandDocument[]>('/api/documents/batch', { method: 'POST', body: form })
   },
-  submitExtraction: (documentId: string, result: OnlineOcrResult) => request<LandDocument>(`/api/documents/${documentId}/extraction`, {
+  // Returns one record per plot row when the register listed several plots (each becomes
+  // its own document) - a single-plot upload still returns an array, just of length 1.
+  submitExtraction: (documentId: string, result: OnlineOcrResult) => request<LandDocument[]>(`/api/documents/${documentId}/extraction`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result),
   }),
   failExtraction: (documentId: string, message: string) => request<LandDocument>(`/api/documents/${documentId}/extraction/fail`, {

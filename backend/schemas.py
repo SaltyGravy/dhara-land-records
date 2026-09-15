@@ -83,6 +83,7 @@ class DocumentOut(BaseModel):
     plot_rows: list[PlotRowOut] = Field(default_factory=list)
     validation_issues: list[dict] = Field(default_factory=list)
     version: int = 1
+    batch_id: str | None = None
 
 
 class ApprovalRequest(BaseModel):

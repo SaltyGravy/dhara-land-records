@@ -29,6 +29,11 @@ class Document(Base):
     checksum_sha256: Mapped[str] = mapped_column(String(64), default="")
     validation_issues: Mapped[str] = mapped_column(Text, default="[]")
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # Set when a single uploaded register lists multiple plots (Khata/Khasra rows) - each
+    # plot becomes its own Document, and siblings share this value (the group's first/
+    # primary document id) so they can be found together (e.g. "7 other plots from this
+    # register"). Null for an ordinary single-plot upload.
+    batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 

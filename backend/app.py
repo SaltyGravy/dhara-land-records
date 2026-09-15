@@ -26,7 +26,7 @@ from .migrations import upgrade_schema
 from .ocr import FIELD_RULES, detect_language, extract_fields, extract_text
 from .schemas import (
     AdminUserOut, ApprovalRequest, AuditOut, DocumentOut, ExtractionFailure, ExtractionSubmission, FieldOut, FieldUpdate, LoginRequest,
-    NotificationOut, ParcelUpdate, PlotRowOut, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
+    NotificationOut, ParcelUpdate, PlotRowIn, PlotRowOut, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
 )
 from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
 from .storage import BLOB_ENABLED, encrypt_and_store, malware_scan, materialize_decrypted, read_and_decrypt, validate_document
@@ -164,6 +164,14 @@ def field_value(document: Document, label: str, fallback: str = "") -> str:
     return next((field.value for field in document.fields if field.label == label and field.value), fallback)
 
 
+def generate_document_id(db: Session) -> str:
+    year = datetime.now(timezone.utc).year
+    while True:
+        record_id = f"LR-{year}-{secrets.randbelow(90000) + 10000}"
+        if db.get(Document, record_id) is None:
+            return record_id
+
+
 def relative_time(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -203,6 +211,7 @@ def serialize_document(document: Document) -> dict:
         "plot_rows": [PlotRowOut.model_validate(row) for row in document.plot_rows],
         "validation_issues": issues,
         "version": document.version,
+        "batch_id": document.batch_id,
     }
 
 
@@ -435,11 +444,7 @@ async def persist_upload(file: UploadFile, state: str, district: str, document_t
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    year = datetime.now(timezone.utc).year
-    while True:
-        record_id = f"LR-{year}-{secrets.randbelow(90000) + 10000}"
-        if db.get(Document, record_id) is None:
-            break
+    record_id = generate_document_id(db)
     storage_name = f"{secrets.token_hex(16)}.dhara"
     checksum = encrypt_and_store(UPLOAD_DIR / storage_name, content)
     document = Document(
@@ -478,30 +483,34 @@ async def upload_batch(
     return records
 
 
-@app.post("/api/documents/{document_id}/extraction", response_model=DocumentOut)
-def submit_browser_extraction(
-    document_id: str, payload: ExtractionSubmission, db: Session = Depends(get_db), user: User = Depends(require_roles(*UPLOAD_ROLES)),
-):
-    document = get_document_or_404(db, document_id)
+def build_extracted_fields(payload: ExtractionSubmission, plot: PlotRowIn | None, plot_label: str | None) -> list[ExtractedField]:
     submitted = {field.label: field for field in payload.fields if field.label in STANDARD_FIELD_LABELS}
-    document.fields.clear()
+    overrides = {"Khata number": plot.khata.strip(), "Khasra number": plot.khasra.strip(), "Plot area": plot.area.strip()} if plot else {}
+    fields = []
     for label in STANDARD_FIELD_LABELS:
+        if label in overrides:
+            value = overrides[label]
+            fields.append(ExtractedField(label=label, value=value, original=(plot_label or "Plot table row")[:500], confidence=95.0 if value else 0, valid=bool(value), verified=False))
+            continue
         field = submitted.get(label)
         value = field.value.strip() if field else ""
-        document.fields.append(ExtractedField(
-            label=label,
-            value=value,
-            original=(field.original.strip() if field else "Not detected")[:500],
-            confidence=field.confidence if value and field else 0,
-            valid=bool(value),
-            verified=False,
+        fields.append(ExtractedField(
+            label=label, value=value, original=(field.original.strip() if field else "Not detected")[:500],
+            confidence=field.confidence if value and field else 0, valid=bool(value), verified=False,
         ))
+    return fields
+
+
+def set_plot_rows(document: Document, rows: list[PlotRowIn]) -> None:
     document.plot_rows.clear()
-    for index, row in enumerate(payload.plot_rows):
+    for index, row in enumerate(rows):
         document.plot_rows.append(PlotRow(
             row_index=index, khata=row.khata.strip(), khasra=row.khasra.strip(),
             area=row.area.strip(), rent=row.rent.strip(), cess=row.cess.strip(),
         ))
+
+
+def finalize_extraction(db: Session, document: Document, payload: ExtractionSubmission, user: User, action: str) -> list[dict]:
     db.flush()
     detected = [field for field in document.fields if field.value]
     field_confidence = sum(field.confidence for field in detected) / len(detected) if detected else 0
@@ -523,11 +532,49 @@ def submit_browser_extraction(
         job.error = ""
         job.attempts += 1
         job.updated_at = datetime.now(timezone.utc)
-    add_revision(db, document, user.display_name, "Completed browser OCR and field extraction")
+    add_revision(db, document, user.display_name, action)
     add_audit(db, "process", user.display_name, f"extracted {len(detected)} of {len(STANDARD_FIELD_LABELS)} fields", document.id, f"{payload.engine}; {payload.pages} page(s); {document.confidence:.1f}% confidence")
     add_notification(db, "OCR processing complete", f"{document.id} is ready for assisted verification.", "warning" if issues else "success")
+    return issues
+
+
+@app.post("/api/documents/{document_id}/extraction", response_model=list[DocumentOut])
+def submit_browser_extraction(
+    document_id: str, payload: ExtractionSubmission, db: Session = Depends(get_db), user: User = Depends(require_roles(*UPLOAD_ROLES)),
+):
+    document = get_document_or_404(db, document_id)
+    plot_rows = payload.plot_rows
+    total_plots = len(plot_rows)
+    multi_plot = total_plots > 1
+
+    first_plot = plot_rows[0] if plot_rows else None
+    first_label = f"Plot table (plot 1 of {total_plots})" if multi_plot else "Plot table row" if plot_rows else None
+    document.fields = build_extracted_fields(payload, first_plot, first_label)
+    set_plot_rows(document, plot_rows)
+    document.batch_id = document.id if multi_plot else None
+    finalize_extraction(db, document, payload, user, "Completed browser OCR and field extraction")
+
+    # A register listing several plots (Khata/Khasra rows) means several distinct
+    # landholdings, not one - give each of the remaining plots its own Document, sharing
+    # the same uploaded source file and document-wide fields (owner, village, district, ...)
+    # but with its own Khata/Khasra/Plot area and its own place in the verification queue.
+    created = [document]
+    for offset, plot in enumerate(plot_rows[1:], start=2):
+        sibling = Document(
+            id=generate_document_id(db), filename=document.filename, storage_name=document.storage_name,
+            mime_type=document.mime_type, file_size=document.file_size, state=document.state,
+            district=document.district, doc_type=document.doc_type, status="Processing", confidence=0,
+            checksum_sha256=document.checksum_sha256, validation_issues="[]", batch_id=document.id, version=0,
+        )
+        db.add(sibling)
+        db.flush()
+        sibling.fields = build_extracted_fields(payload, plot, f"Plot table (plot {offset} of {total_plots})")
+        set_plot_rows(sibling, plot_rows)
+        finalize_extraction(db, sibling, payload, user, f"Created from a {total_plots}-plot register (plot {offset} of {total_plots})")
+        created.append(sibling)
+
     db.commit()
-    return serialize_document(get_document_or_404(db, document.id))
+    return [serialize_document(get_document_or_404(db, doc.id)) for doc in created]
 
 
 @app.post("/api/documents/{document_id}/extraction/fail", response_model=DocumentOut)
