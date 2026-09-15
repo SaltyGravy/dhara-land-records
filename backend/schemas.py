@@ -30,6 +30,24 @@ class ExtractionField(BaseModel):
     verified: bool = False
 
 
+class PlotRowIn(BaseModel):
+    khata: str = Field(default="", max_length=80)
+    khasra: str = Field(default="", max_length=80)
+    area: str = Field(default="", max_length=160)
+    rent: str = Field(default="", max_length=40)
+    cess: str = Field(default="", max_length=40)
+
+
+class PlotRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    khata: str
+    khasra: str
+    area: str
+    rent: str
+    cess: str
+
+
 class ExtractionSubmission(BaseModel):
     text: str = Field(min_length=1, max_length=1_000_000)
     engine: str = Field(default="Browser OCR", max_length=120)
@@ -38,6 +56,7 @@ class ExtractionSubmission(BaseModel):
     fields: list[ExtractionField] = Field(default_factory=list, max_length=20)
     pages: int = Field(default=1, ge=1, le=10_000)
     warnings: list[str] = Field(default_factory=list, max_length=10)
+    plot_rows: list[PlotRowIn] = Field(default_factory=list, max_length=200)
 
 
 class ExtractionFailure(BaseModel):
@@ -61,6 +80,7 @@ class DocumentOut(BaseModel):
     file_url: str | None
     ocr_engine: str
     fields: list[FieldOut] = Field(default_factory=list)
+    plot_rows: list[PlotRowOut] = Field(default_factory=list)
     validation_issues: list[dict] = Field(default_factory=list)
     version: int = 1
 

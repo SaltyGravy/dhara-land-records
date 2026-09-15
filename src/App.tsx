@@ -5,9 +5,10 @@ import {
   FileSearch, FileText, Filter, FolderArchive, Gauge, Globe2, History,
   Languages, LayoutDashboard, LockKeyhole, LogIn, LogOut, Map, MapPin, Menu, MoreHorizontal,
   PanelLeftClose, Plus, RefreshCcw, ScanLine, Search, Settings, ShieldCheck,
-  Sparkles, Upload, UserRound, UsersRound, X, XCircle,
+  Sparkles, Table2, Upload, UserRound, UsersRound, X, XCircle,
 } from 'lucide-react'
-import { activity, districts, documents as initialDocuments, extractedFields, type DocumentStatus, type ExtractedField, type LandDocument } from './data'
+import { activity, districts, documents as initialDocuments, extractedFields, type DocumentStatus, type ExtractedField, type LandDocument, type PlotRow } from './data'
+import { districtsForState, indiaStateNames } from './india'
 import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion } from './api'
 
 type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'audit' | 'settings'
@@ -281,6 +282,7 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
   const [processing, setProcessing] = useState(false)
   const [step, setStep] = useState(0)
   const [error, setError] = useState('')
+  const [stateName, setStateName] = useState('Uttar Pradesh')
   const [district, setDistrict] = useState('Varanasi')
   const [documentType, setDocumentType] = useState('Khasra / Khatauni')
   const [language, setLanguage] = useState('Auto-detect')
@@ -295,7 +297,7 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
     setError('')
     setProcessing(true)
     try {
-      const queued = await api.uploadBatch(files, { state: 'Uttar Pradesh', district, documentType, language })
+      const queued = await api.uploadBatch(files, { state: stateName, district, documentType, language })
       const { recognizeLandRecord } = await import('./ocr')
       const processed: LandDocument[] = []
       const failures: string[] = []
@@ -339,7 +341,7 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
       </div>}
       <div className="section-divider" />
       <div className="section-title"><span className="number">2</span><div><h3>Record context</h3><p>Helps the AI apply the correct language and validation rules</p></div></div>
-      <div className="form-grid"><label>State<select defaultValue="Uttar Pradesh"><option>Uttar Pradesh</option></select></label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}><option>Varanasi</option><option>Lucknow</option><option>Prayagraj</option></select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
+      <div className="form-grid"><label>State<select value={stateName} onChange={e => { const nextState = e.target.value; setStateName(nextState); setDistrict(districtsForState(nextState)[0] || '') }}>{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select></label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}>{districtsForState(stateName).map(option => <option key={option}>{option}</option>)}</select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
       {error && <div className="upload-error"><AlertTriangle size={16}/>{error}</div>}
       <div className="upload-footer"><span><LockKeyhole size={15}/>AES-256-GCM protected storage · SHA-256 integrity · Content validation</span><button className="btn primary" disabled={!files.length || processing} onClick={start}>{processing ? <><RefreshCcw className="spin" size={17}/>Processing {completedCount}/{files.length}…</> : <><Sparkles size={17}/>Process {files.length > 1 ? `${files.length} documents` : 'document'}</>}</button></div>
     </div>
@@ -384,6 +386,16 @@ function DocumentPreview({ document }: { document?: LandDocument }) {
       <p className="handwriting">नामांतरण आदेश संख्या ११७ के अनुसार संशोधित</p><div className="signature"><span>लेखपाल हस्ताक्षर</span><i /></div>
       <div className="highlight h1"/><div className="highlight h2"/><div className="highlight h3"/>
     </div></div>
+  </div>
+}
+
+function PlotScheduleTable({ rows }: { rows?: PlotRow[] }) {
+  if (!rows?.length) return null
+  return <div className="plot-schedule">
+    <div className="panel-label"><span><Table2 size={13}/> PLOT SCHEDULE</span><span>{rows.length} plot{rows.length === 1 ? '' : 's'} in this register</span></div>
+    <div className="table-scroll"><table><thead><tr><th>#</th><th>Khata</th><th>Khasra / Plot</th><th>Area</th><th>Rent</th><th>Cess</th></tr></thead>
+      <tbody>{rows.map((row, index) => <tr key={index}><td>{index + 1}</td><td>{row.khata || '—'}</td><td>{row.khasra || '—'}</td><td>{row.area || '—'}</td><td>{row.rent || '—'}</td><td>{row.cess || '—'}</td></tr>)}</tbody>
+    </table></div>
   </div>
 }
 
@@ -446,6 +458,7 @@ function VerificationPage({ document, onVerified, onRejected, onBack, apiOnline 
         <div className="record-overview"><div><span>AI confidence</span><strong>{confidence}%</strong></div><div><span>Validation</span><strong className={issues.length ? 'warning-text' : 'success-text'}>{issues.length ? `${issues.length} issues` : 'Passed'}</strong></div><div><span>Duplicate check</span><strong className={issues.some(issue => issue.code === 'possible_duplicate') ? 'warning-text' : 'success-text'}>{issues.some(issue => issue.code === 'possible_duplicate') ? 'Possible match' : 'Clear'}</strong></div></div>
         {issues.length > 0 && <div className="validation-list">{issues.map((issue, index) => <div key={`${issue.code}-${index}`} className={issue.severity}><AlertTriangle size={15}/><div><strong>{issue.field}</strong><span>{issue.message}</span></div></div>)}</div>}
         <div className="field-list">{fields.map((field, i) => <label key={field.id || field.label} className={field.confidence < 80 ? 'flagged-field' : ''}><div><span>{field.label}</span><span className={`score ${field.confidence < 80 ? 'low' : field.confidence < 90 ? 'medium' : ''}`}>{field.confidence}%</span></div><div className="field-input"><input value={field.value} placeholder="Not detected — enter value" onChange={e => setFields(fs => fs.map((f, j) => j === i ? {...f, value: e.target.value, valid: Boolean(e.target.value)} : f))} onBlur={() => saveField(fields[i])}/>{field.valid ? <CheckCircle2 size={18}/> : <AlertTriangle size={18}/>}</div><small>Source: {field.original}</small>{!field.valid && <p>{field.label === 'Mutation reference' ? 'Reference is missing or requires confirmation.' : 'Extracted value requires confirmation.'}</p>}</label>)}</div>
+        <PlotScheduleTable rows={document?.plot_rows}/>
       </div>
     </div>
   </div>
@@ -479,7 +492,8 @@ function RecordDetails({ document, user, onClose, onReview }: { document: LandDo
       <div className="record-modal-summary"><StatusBadge status={document.status}/><span>{document.confidence}% confidence</span><span>{document.language}</span><span>Version {document.version || 1}</span></div>
       {sourceError && <div className="upload-error"><AlertTriangle size={15}/>{sourceError}</div>}
       <div className="record-modal-fields">{document.fields?.map(field => <div key={field.id || field.label}><span>{field.label}</span><strong>{field.value || 'Not recorded'}</strong><small>{field.confidence}% confidence</small></div>)}</div>
-      {canSeeVersions && <div className="version-history"><span className="eyebrow">VERSION HISTORY</span>{versions.length ? versions.slice(0, 5).map(version => <div key={`${version.version}-${version.created_at}`}><History size={15}/><p><b>Version {version.version} · {version.action}</b><small>{version.actor} · {new Date(version.created_at).toLocaleString('en-IN')}</small></p></div>) : <p className="muted">No corrections or decisions have been recorded yet.</p>}</div>}
+      <PlotScheduleTable rows={document.plot_rows}/>
+      {canSeeVersions &&<div className="version-history"><span className="eyebrow">VERSION HISTORY</span>{versions.length ? versions.slice(0, 5).map(version => <div key={`${version.version}-${version.created_at}`}><History size={15}/><p><b>Version {version.version} · {version.action}</b><small>{version.actor} · {new Date(version.created_at).toLocaleString('en-IN')}</small></p></div>) : <p className="muted">No corrections or decisions have been recorded yet.</p>}</div>}
       <div className="record-modal-actions"><button className="btn secondary" onClick={() => api.exportRecord(document.id)}><Database size={16}/>Canonical JSON</button>{document.file_url && <button className="btn secondary" onClick={openSource}><FileSearch size={16}/>Open source</button>}{document.status === 'Needs review' && canReview && <button className="btn primary" onClick={() => { onClose(); onReview(document.id) }}><FileCheck2 size={16}/>Review & correct</button>}</div>
     </section>
   </div>

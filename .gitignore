@@ -11,3 +11,5 @@ __pycache__/
 !.env.example
 .wrangler/
 .dev.vars*
+.vercel
+.env*

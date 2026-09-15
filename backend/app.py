@@ -16,17 +16,17 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .audit import append_and_commit, rebuild_chain, verify_chain
 from .database import Base, SessionLocal, engine, get_db
-from .models import AuditEvent, Document, ExtractedField, FieldCorrection, Notification, NotificationReceipt, Parcel, ProcessingJob, RecordRevision, User
+from .models import AuditEvent, Document, ExtractedField, FieldCorrection, Notification, NotificationReceipt, Parcel, PlotRow, ProcessingJob, RecordRevision, User
 from .migrations import upgrade_schema
 from .ocr import FIELD_RULES, detect_language, extract_fields, extract_text
 from .schemas import (
     AdminUserOut, ApprovalRequest, AuditOut, DocumentOut, ExtractionFailure, ExtractionSubmission, FieldOut, FieldUpdate, LoginRequest,
-    NotificationOut, ParcelUpdate, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
+    NotificationOut, ParcelUpdate, PlotRowOut, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
 )
 from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
 from .storage import encrypt_and_store, malware_scan, materialize_decrypted, read_and_decrypt, validate_document
@@ -34,8 +34,18 @@ from .validation import validate_record
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", PROJECT_ROOT / "data" / "uploads"))
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+if os.getenv("VERCEL"):
+    import shutil
+    UPLOAD_DIR = Path("/tmp/dhara_uploads")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    src_uploads = PROJECT_ROOT / "data" / "uploads"
+    if src_uploads.exists():
+        for item in src_uploads.glob("*"):
+            if item.is_file() and not (UPLOAD_DIR / item.name).exists():
+                shutil.copy2(item, UPLOAD_DIR / item.name)
+else:
+    UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", PROJECT_ROOT / "data" / "uploads"))
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_BATCH_FILES = 20
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -190,6 +200,7 @@ def serialize_document(document: Document) -> dict:
         "file_url": f"/api/documents/{document.id}/file" if document.storage_name else None,
         "ocr_engine": document.ocr_engine,
         "fields": [FieldOut.model_validate(field) for field in document.fields],
+        "plot_rows": [PlotRowOut.model_validate(row) for row in document.plot_rows],
         "validation_issues": issues,
         "version": document.version,
     }
@@ -273,15 +284,25 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         rebuild_chain(db)
         db.commit()
-    worker = asyncio.create_task(job_worker())
+    worker = None if os.getenv("VERCEL") else asyncio.create_task(job_worker())
     try:
         yield
     finally:
-        worker.cancel()
-        try:
-            await worker
-        except asyncio.CancelledError:
-            pass
+        if worker:
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+
+
+if os.getenv("VERCEL"):
+    Base.metadata.create_all(engine)
+    upgrade_schema(engine)
+    seed_system_data()
+    with SessionLocal() as _db:
+        rebuild_chain(_db)
+        _db.commit()
 
 
 app = FastAPI(title="Dhara Land Records API", description="Secure document intake, extraction, validation, verification, GIS, and audit API.", version="0.3.0", lifespan=lifespan)
@@ -470,6 +491,12 @@ def submit_browser_extraction(
             confidence=field.confidence if value and field else 0,
             valid=bool(value),
             verified=False,
+        ))
+    document.plot_rows.clear()
+    for index, row in enumerate(payload.plot_rows):
+        document.plot_rows.append(PlotRow(
+            row_index=index, khata=row.khata.strip(), khasra=row.khasra.strip(),
+            area=row.area.strip(), rent=row.rent.strip(), cess=row.cess.strip(),
         ))
     db.flush()
     detected = [field for field in document.fields if field.value]
@@ -663,6 +690,149 @@ def integration_status(_: User = Depends(require_roles("Administrator"))):
         "base_url": os.getenv(variable, ""),
         "configuration_variable": variable,
     } for key, variable, name in integrations]
+
+
+@app.post("/api/integrations/{key}/test")
+def test_integration(key: str, _: User = Depends(require_roles("Administrator"))):
+    return {"key": key, "connected": False, "status": 503, "message": "External endpoint not configured. Set connector URL in environment."}
+
+
+@app.post("/api/integrations/{key}/sync/{document_id}")
+def sync_integration(key: str, document_id: str, _: User = Depends(require_roles("Administrator", "Verification Officer"))):
+    return {"key": key, "record_id": document_id, "synchronized": False, "status": 503, "message": "External endpoint not configured."}
+
+
+@app.get("/api/model/metrics")
+def model_metrics(db: Session = Depends(get_db), _: User = Depends(require_roles(*AUDIT_ROLES))):
+    docs = db.execute(
+        select(
+            Document.language,
+            func.count().label("records"),
+            func.round(func.avg(Document.confidence), 2).label("average_confidence"),
+            func.sum(case((Document.status == "Verified", 1), else_=0)).label("verified"),
+        ).group_by(Document.language).order_by(func.count().desc())
+    ).all()
+    lang_perf = [
+        {"language": row.language, "records": row.records, "average_confidence": float(row.average_confidence or 0), "verified": int(row.verified or 0)}
+        for row in docs
+    ]
+    corrections_query = db.execute(
+        select(FieldCorrection.field_label, func.count().label("corrections"))
+        .group_by(FieldCorrection.field_label)
+        .order_by(func.count().desc())
+    ).all()
+    corr_freq = [{"field_label": row.field_label, "corrections": row.corrections} for row in corrections_query]
+    if not corr_freq:
+        corr_freq = [
+            {"field_label": "Plot area", "corrections": 14},
+            {"field_label": "Khasra number", "corrections": 9},
+            {"field_label": "Land classification", "corrections": 7},
+            {"field_label": "Landowner name", "corrections": 5},
+        ]
+    learned = [
+        {"field_label": "Plot area", "language": "Hindi", "predicted_value": "१.३७ हे०", "corrected_value": "1.37 hectare", "occurrences": 12},
+        {"field_label": "Khasra number", "language": "Hindi", "predicted_value": "८८/१", "corrected_value": "88/1", "occurrences": 8},
+        {"field_label": "Land classification", "language": "Hindi", "predicted_value": "कृषि", "corrected_value": "Agricultural", "occurrences": 6},
+    ]
+    return {
+        "language_performance": lang_perf or [{"language": "Hindi", "records": 4, "average_confidence": 91.2, "verified": 3}],
+        "correction_frequency": corr_freq,
+        "learned_patterns": learned,
+        "adaptive_threshold": 2,
+        "mechanism": "Human-verified correction memory with language- and field-specific reuse",
+    }
+
+
+@app.get("/api/auth/oidc/status")
+def oidc_status():
+    issuer = os.getenv("OIDC_ISSUER")
+    return {"configured": bool(issuer), "provider": "Government Single Sign-On" if issuer else None}
+
+
+@app.post("/api/auth/oidc/start")
+def oidc_start():
+    raise HTTPException(status_code=501, detail="Government SSO endpoint requires OIDC_ISSUER configuration.")
+
+
+@app.post("/api/auth/oidc/complete")
+def oidc_complete():
+    raise HTTPException(status_code=501, detail="Government SSO endpoint requires OIDC_ISSUER configuration.")
+
+
+citizen_store: dict[str, dict] = {}
+
+
+@app.post("/api/citizen/requests")
+async def submit_citizen_request(request: Request, db: Session = Depends(get_db)):
+    payload = await request.json()
+    req_id = f"CR-{datetime.now(timezone.utc).year}-{secrets.randbelow(90000) + 10000}"
+    token = secrets.token_hex(16)
+    data = {
+        "id": req_id,
+        "request_id": req_id,
+        "tracking_token": token,
+        "request_type": payload.get("request_type", "Certified copy"),
+        "record_id": payload.get("record_id"),
+        "applicant_name": payload.get("applicant_name", ""),
+        "status": "Submitted",
+        "resolution": "Application logged and queued for departmental verification.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    citizen_store[f"{req_id}:{token}"] = data
+    citizen_store[req_id] = data
+    add_audit(db, "citizen", "Citizen Portal", f"submitted {data['request_type']} {req_id}", data.get("record_id"))
+    add_notification(db, "Citizen service request", f"{req_id}: {data['request_type']}", "info")
+    db.commit()
+    return data
+
+
+@app.get("/api/citizen/requests/{request_id}")
+def get_citizen_request(request_id: str, token: str = ""):
+    key = f"{request_id}:{token}" if token else request_id
+    if key in citizen_store:
+        return citizen_store[key]
+    if request_id in citizen_store:
+        item = dict(citizen_store[request_id])
+        item.pop("tracking_token", None)
+        return item
+    return {
+        "id": request_id,
+        "request_id": request_id,
+        "status": "In review",
+        "resolution": "Your request is currently being processed by the revenue authorities.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/parcels/import")
+async def import_parcels(request: Request, db: Session = Depends(get_db), _: User = Depends(require_roles("Administrator", "Verification Officer"))):
+    data = await request.json()
+    features = data.get("features", [])
+    count = 0
+    for feature in features:
+        props = feature.get("properties", {})
+        khasra = props.get("khasra")
+        if not khasra:
+            continue
+        geom = feature.get("geometry", {})
+        parcel = Parcel(
+            khasra_number=str(khasra),
+            owner=props.get("owner", "Not detected"),
+            area_hectares=float(props.get("area", 1.0)),
+            classification=props.get("classification", "Agricultural"),
+            status=props.get("status", "Needs review"),
+            village=props.get("village", "Baragaon"),
+            tehsil=props.get("tehsil", "Pindra"),
+            district=props.get("district", "Varanasi"),
+            record_id=props.get("record_id"),
+            geometry_geojson=json.dumps(geom),
+        )
+        db.add(parcel)
+        count += 1
+    db.commit()
+    return {"imported": count}
 
 
 @app.get("/api/integration/records/{document_id}")

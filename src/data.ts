@@ -1,5 +1,13 @@
 export type DocumentStatus = 'Verified' | 'Needs review' | 'Processing' | 'Rejected'
 
+export interface PlotRow {
+  khata: string
+  khasra: string
+  area: string
+  rent: string
+  cess: string
+}
+
 export interface LandDocument {
   id: string
   owner: string
@@ -16,6 +24,7 @@ export interface LandDocument {
   file_url?: string | null
   ocr_engine?: string
   fields?: ExtractedField[]
+  plot_rows?: PlotRow[]
   validation_issues?: ValidationIssue[]
   version?: number
 }

@@ -1,8 +1,8 @@
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { createWorker, OEM, PSM, type LoggerMessage } from 'tesseract.js'
-import { detectScriptLanguage, extractStructuredFields } from './extraction'
-import type { ExtractedField } from './data'
+import { detectScriptLanguage, extractPlotRows, extractStructuredFields } from './extraction'
+import type { ExtractedField, PlotRow } from './data'
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
@@ -20,6 +20,11 @@ export interface OnlineOcrResult {
   fields: ExtractedField[]
   pages: number
   warnings: string[]
+  // All plot rows found in a tabular register (e.g. a Bihar Jamabandi's Khata/Khasra/area
+  // table) - the Khata/Khasra/Plot area fields above only carry the first row's values, since
+  // ExtractedField has no multi-row concept yet. Named to match the backend's snake_case field
+  // (this whole object is sent to the API as JSON, unlike this file's own local variables).
+  plot_rows: PlotRow[]
 }
 
 type Progress = (stage: string, progress: number) => void
@@ -68,6 +73,35 @@ async function imageCanvas(file: File): Promise<HTMLCanvasElement> {
   try { return enhancedCanvas(bitmap, bitmap.width, bitmap.height) } finally { bitmap.close() }
 }
 
+// Some government "print to PDF" exports emit text items out of visual reading
+// order (e.g. every value in a table row before any of that row's labels), so the
+// content-stream order can't be trusted. Page coordinates can: cluster items into
+// rows by y-position, then read each row left-to-right by x-position. Adjacent
+// glyph/conjunct fragments of the same word carry no space between them in these
+// exports - only deliberate gaps (column/field separators) contain a real " ".
+interface PositionedTextItem { str: string; transform: number[] }
+
+function reconstructPageText(items: Array<{ str?: unknown; transform?: unknown }>): string {
+  const nul = String.fromCharCode(0)
+  const withText = items.filter((item): item is PositionedTextItem =>
+    typeof item.str === 'string' && item.str !== '' && item.str !== nul && Array.isArray(item.transform))
+  withText.sort((a, b) => b.transform[5] - a.transform[5] || a.transform[4] - b.transform[4])
+  const rowTolerance = 3
+  const rows: { y: number; items: PositionedTextItem[] }[] = []
+  for (const item of withText) {
+    const y = item.transform[5]
+    const row = rows[rows.length - 1]
+    if (!row || Math.abs(row.y - y) > rowTolerance) rows.push({ y, items: [item] })
+    else row.items.push(item)
+  }
+  const text = rows
+    .map(row => row.items.sort((a, b) => a.transform[4] - b.transform[4]).map(item => item.str).join(''))
+    .join('\n')
+  // A NUL can also arrive embedded inside an otherwise-valid item.str, not just as
+  // a standalone item - strip those too rather than leaving a literal NUL in the text.
+  return text.split(nul).join('')
+}
+
 async function pdfPages(file: File, progress: Progress): Promise<{ textLayer: string; canvases: HTMLCanvasElement[]; pageCount: number; warnings: string[] }> {
   const pdf = await getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise
   const text: string[] = []
@@ -79,7 +113,7 @@ async function pdfPages(file: File, progress: Progress): Promise<{ textLayer: st
     progress(`Reading PDF page ${pageNumber}/${pageLimit}`, 5 + pageNumber / pageLimit * 22)
     const page = await pdf.getPage(pageNumber)
     const content = await page.getTextContent()
-    text.push(content.items.map(item => 'str' in item ? item.str : '').join(' '))
+    text.push(reconstructPageText(content.items as Array<{ str?: unknown; transform?: unknown }>))
     if (text.join(' ').trim().length < 80) {
       const viewport = page.getViewport({ scale: 2 })
       const canvas = document.createElement('canvas')
@@ -141,6 +175,7 @@ export async function recognizeLandRecord(file: File, requestedLanguage: string,
   const language = detectScriptLanguage(text, requestedLanguage)
   progress('Classifying land-record fields', 90)
   const extractedFields = extractStructuredFields(text, district, confidence)
+  const plot_rows = extractPlotRows(text)
   progress('Running validation rules', 96)
-  return { text: text.slice(0, 1_000_000), engine, language, confidence, fields: extractedFields, pages, warnings }
+  return { text: text.slice(0, 1_000_000), engine, language, confidence, fields: extractedFields, pages, warnings, plot_rows }
 }

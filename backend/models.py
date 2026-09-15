@@ -33,6 +33,7 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     fields: Mapped[list["ExtractedField"]] = relationship(back_populates="document", cascade="all, delete-orphan", order_by="ExtractedField.id")
+    plot_rows: Mapped[list["PlotRow"]] = relationship(back_populates="document", cascade="all, delete-orphan", order_by="PlotRow.row_index")
 
 
 class ExtractedField(Base):
@@ -48,6 +49,27 @@ class ExtractedField(Base):
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     document: Mapped[Document] = relationship(back_populates="fields")
+
+
+class PlotRow(Base):
+    """One row of a tabular land register (e.g. a Bihar Jamabandi's Khata/Khasra/area table).
+
+    A single document can list several plots; ExtractedField has no room for that (one value
+    per canonical label), so plot rows are stored separately and shown as their own table.
+    """
+
+    __tablename__ = "plot_rows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    row_index: Mapped[int] = mapped_column(Integer, default=0)
+    khata: Mapped[str] = mapped_column(String(80), default="")
+    khasra: Mapped[str] = mapped_column(String(80), default="")
+    area: Mapped[str] = mapped_column(String(160), default="")
+    rent: Mapped[str] = mapped_column(String(40), default="")
+    cess: Mapped[str] = mapped_column(String(40), default="")
+
+    document: Mapped[Document] = relationship(back_populates="plot_rows")
 
 
 class AuditEvent(Base):
