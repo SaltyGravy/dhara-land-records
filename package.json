@@ -13,14 +13,12 @@
     "build": "tsc -b && vite build",
     "build:site": "tsc -b && SITES_BUILD=1 vite build",
     "preview:site": "SITES_BUILD=1 vite preview",
-    "db:generate": "drizzle-kit generate",
     "preview": "vite preview",
     "test:ui": "node tests/ui-smoke.mjs",
     "test:ocr-ui": "node tests/ocr-ui-smoke.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "drizzle-orm": "0.45.2",
     "jose": "^6.1.0",
     "lucide-react": "latest",
     "pdfjs-dist": "^5.4.149",
@@ -37,7 +35,6 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "concurrently": "latest",
-    "drizzle-kit": "0.31.10",
     "puppeteer-core": "latest",
     "typescript": "latest",
     "wrangler": "4.92.0"
