@@ -7,6 +7,8 @@ from pathlib import Path
 from pypdf import PdfReader
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
+from .textmatch import levenshtein
+
 
 LANGUAGE_CODES = {
     "Assamese": "asm+eng",
@@ -163,7 +165,10 @@ def extract_text(path: Path, mime_type: str, language: str) -> tuple[str, str, l
 
 FIELD_RULES: list[tuple[str, list[str]]] = [
     ("Landowner name", [
-        r"(?:land\s*owner|owner(?:\s+name)?|recorded\s+owner)\s*[:\-]?\s*([^\n|,;]{3,80})",
+        # (?!\w) after the label stops "owner" from matching as a bare prefix of an unrelated
+        # word like "Ownership" - confirmed on a real fixture where that swallowed the
+        # "Ownership details" line instead of finding the actual (Hindi-labeled) name field.
+        r"(?:land\s*owner|owner(?:\s+name)?|recorded\s+owner)(?!\w)\s*[:\-]?\s*([^\n|,;]{3,80})",
         r"(?:खातेदार(?:\s+का\s+नाम)?|भूस्वामी|मालिक)\s*[:\-]?\s*([^\n|,;]{2,80})",
     ]),
     ("Survey number", [r"(?:survey)(?:\s+(?:no|number|संख्या|सं))?\s*[:\-]?\s*([A-Za-z0-9०-९/\-]+)", r"सर्वे(?:\s+(?:संख्या|सं))?\s*[:\-]?\s*([A-Za-z0-9०-९/\-]+)"]),
@@ -206,8 +211,40 @@ def _match_quality(label: str, value: str) -> float:
     return quality
 
 
-def extract_fields(text: str, district: str, word_confidences: list[WordConfidence] | None = None, engine: str = "") -> list[dict]:
+# How close a freshly OCR'd raw value has to be to a previously corrected one (as a fraction
+# of edit distance) to count as "the same recurring misread" rather than an unrelated value
+# that happens to be short. Tighter than validation's duplicate-detection ratios: a false
+# positive here silently overwrites the extracted value, not just raises a warning.
+_CORRECTION_MATCH_RATIO = 0.2
+
+# (field_label, raw OCR value as originally extracted) -> the value an officer corrected it
+# to. Built once per document from confirmed FieldCorrection rows in the same language (see
+# app.build_correction_lookup) and threaded through here so this module stays DB-agnostic.
+CorrectionLookup = dict[tuple[str, str], str]
+
+
+def _find_correction(corrections: CorrectionLookup, label: str, value: str) -> str | None:
+    exact = corrections.get((label, value))
+    if exact is not None:
+        return exact
+    best_value: str | None = None
+    best_distance: int | None = None
+    for (candidate_label, raw), corrected in corrections.items():
+        if candidate_label != label or not raw or raw == value:
+            continue
+        distance = levenshtein(raw, value)
+        allowed = max(1, round(_CORRECTION_MATCH_RATIO * max(len(raw), len(value))))
+        if distance <= allowed and (best_distance is None or distance < best_distance):
+            best_value, best_distance = corrected, distance
+    return best_value
+
+
+def extract_fields(
+    text: str, district: str, word_confidences: list[WordConfidence] | None = None,
+    engine: str = "", corrections: CorrectionLookup | None = None,
+) -> list[dict]:
     word_confidences = word_confidences or []
+    corrections = corrections or {}
     # No recognized-word confidences to draw on: an un-OCR'd PDF text layer is closer to
     # ground truth than a guess, so it starts high; anything else genuinely doesn't know.
     base_without_words = 97.0 if engine == "PDF text layer" else 65.0
@@ -221,6 +258,14 @@ def extract_fields(text: str, district: str, word_confidences: list[WordConfiden
                 break
         if match:
             value = match.group(1).strip(" .:-")
+            reused = _find_correction(corrections, label, value)
+            if reused is not None and reused != value:
+                fields.append({
+                    "label": label, "value": reused,
+                    "original": f"{match.group(0).strip()} (reused a confirmed correction of '{value}')",
+                    "confidence": 97.0, "valid": True,
+                })
+                continue
             base = _word_confidence(word_confidences, *match.span(1))
             if base is None:
                 base = base_without_words

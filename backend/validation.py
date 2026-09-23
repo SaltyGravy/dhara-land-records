@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import Document, Parcel
+from .textmatch import similar
 
 
 REQUIRED_FIELDS = {"Landowner name", "Khasra number", "Village", "District"}
@@ -38,36 +39,6 @@ _EARTH_METERS_PER_DEGREE = 111_320.0
 
 def _field_map(document: Document) -> dict[str, str]:
     return {field.label: field.value.strip() for field in document.fields}
-
-
-def _levenshtein(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-    previous = list(range(len(b) + 1))
-    for row, char_a in enumerate(a, start=1):
-        current = [row] + [0] * len(b)
-        for col, char_b in enumerate(b, start=1):
-            cost = 0 if char_a == char_b else 1
-            current[col] = min(previous[col] + 1, current[col - 1] + 1, previous[col - 1] + cost)
-        previous = current
-    return previous[-1]
-
-
-def _similar(a: str, b: str, max_ratio: float) -> bool:
-    """Fuzzy-equal within max_ratio of edit distance - tolerates a mangled digit/character
-    without treating any two short, mostly-unrelated strings as a match."""
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    if min(len(a), len(b)) <= 2:
-        return False
-    distance = _levenshtein(a, b)
-    return distance <= max(1, round(max_ratio * max(len(a), len(b))))
 
 
 def _parse_area_hectares(text: str) -> float | None:
@@ -134,11 +105,11 @@ def _duplicate_and_conflict_checks(db: Session, document: Document, values: dict
         candidate_values = _field_map(candidate)
         candidate_khasra = re.sub(r"\s+", "", candidate_values.get("Khasra number", "").casefold())
         candidate_owner = re.sub(r"\s+", " ", candidate_values.get("Landowner name", "").casefold()).strip()
-        if not _similar(khasra, candidate_khasra, KHASRA_SIMILARITY_RATIO):
+        if not similar(khasra, candidate_khasra, KHASRA_SIMILARITY_RATIO):
             continue
         if not owner or not candidate_owner:
             continue
-        if _similar(owner, candidate_owner, NAME_SIMILARITY_RATIO):
+        if similar(owner, candidate_owner, NAME_SIMILARITY_RATIO):
             duplicate_of = duplicate_of or candidate.id
             continue
         # Same plot, two different recorded owners - the actual land-dispute signal, distinct

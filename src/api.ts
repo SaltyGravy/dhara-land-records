@@ -97,7 +97,8 @@ export interface CitizenRequestStatus {
 export interface LearningMetrics {
   language_performance: Array<{ language: string; records: number; average_confidence: number; verified: number }>
   correction_frequency: Array<{ field_label: string; corrections: number }>
-  learned_patterns: Array<{ field_label: string; language: string; predicted_value: string; corrected_value: string; occurrences: number }>
+  learned_patterns: Array<{ field_label: string; language: string; corrected_value: string; occurrences: number }>
+  learned_patterns_message: string | null
   adaptive_threshold: number
   mechanism: string
 }

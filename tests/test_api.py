@@ -1,11 +1,15 @@
 import io
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 
+import uvicorn
 from fastapi.testclient import TestClient
 from PIL import Image
+
+from scripts.mock_lrms import app as mock_lrms_app
 
 
 TEMP_ROOT = Path(tempfile.mkdtemp(prefix="dhara-tests-"))
@@ -235,6 +239,68 @@ def test_cross_modal_geometry_validation():
         assert client.patch(f"/api/parcels/{target['id']}", json={"record_id": linked_id}, headers=reviewer).status_code == 200
         after = client.get(f"/api/documents/{linked_id}", headers=reviewer).json()
         assert "area_geometry_mismatch" in {issue["code"] for issue in after["validation_issues"]}
+
+
+def test_model_metrics_computes_learned_patterns_from_real_corrections():
+    with TestClient(app) as client:
+        operator = auth(client, "operator@dhara.gov.in")
+        reviewer = auth(client, "priya@dhara.gov.in")
+        auditor = auth(client, "admin@dhara.gov.in")
+
+        baseline = client.get("/api/model/metrics", headers=auditor).json()
+        assert baseline["learned_patterns"] == []
+        assert baseline["learned_patterns_message"]
+
+        # Confirm the same correction on two separate documents - ADAPTIVE_THRESHOLD is 2, so
+        # this is exactly what should turn it into a reported "learned pattern".
+        for district in ("Noida", "Agra"):
+            record_id = create_document(client, operator, district=district)
+            submit_extraction(client, record_id, operator, {"Landowner name": "Owner", "Khasra number": "88/8", "Village": "V", "District": district})
+            document = client.get(f"/api/documents/{record_id}", headers=reviewer).json()
+            field = next(item for item in document["fields"] if item["label"] == "Khasra number")
+            correction = client.patch(f"/api/documents/{record_id}/fields/{field['id']}", json={"value": "88/1", "actor": "reviewer"}, headers=reviewer)
+            assert correction.status_code == 200
+
+        metrics = client.get("/api/model/metrics", headers=auditor).json()
+        entry = next((row for row in metrics["learned_patterns"] if row["field_label"] == "Khasra number" and row["corrected_value"] == "88/1"), None)
+        assert entry is not None
+        assert entry["occurrences"] >= 2
+        assert metrics["learned_patterns_message"] is None
+
+
+def test_integration_test_and_sync_against_a_real_mock_connector():
+    # Runs the actual mock LRMS service (scripts/mock_lrms.py) on a real local socket and
+    # points the app's LRMS connector at it - this exercises the real outbound HTTP call
+    # (backend.app._call_external_json), not a mocked-out version of it.
+    server = uvicorn.Server(uvicorn.Config(mock_lrms_app, host="127.0.0.1", port=8971, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(.05)
+        assert server.started, "mock LRMS server did not start"
+        os.environ["LRMS_BASE_URL"] = "http://127.0.0.1:8971"
+        with TestClient(app) as client:
+            admin = auth(client, "admin@dhara.gov.in")
+            operator = auth(client, "operator@dhara.gov.in")
+
+            probe = client.post("/api/integrations/LRMS/test", headers=admin)
+            assert probe.status_code == 200
+            assert probe.json()["connected"] is True
+
+            record_id = create_document(client, operator, district="Kanpur")
+            sync = client.post(f"/api/integrations/LRMS/sync/{record_id}", headers=admin)
+            assert sync.status_code == 200
+            body = sync.json()
+            assert body["synchronized"] is True
+            assert body["response"]["accepted"] is True
+            assert body["response"]["lrms_reference"] == f"LRMS-{record_id}"
+    finally:
+        os.environ.pop("LRMS_BASE_URL", None)
+        server.should_exit = True
+        thread.join(timeout=5)
 
 
 def test_rejects_disguised_and_unsupported_uploads():

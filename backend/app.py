@@ -7,6 +7,8 @@ import os
 import re
 import secrets
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -55,6 +57,19 @@ REVIEW_ROLES = ("Administrator", "Verification Officer")
 UPLOAD_ROLES = ("Administrator", "Data Operator")
 AUDIT_ROLES = ("Administrator", "Verification Officer", "Auditor")
 STANDARD_FIELD_LABELS = [label for label, _ in FIELD_RULES]
+# How many times a (field, language, corrected value) has to be confirmed by a reviewer
+# before /api/model/metrics reports it as a "learned pattern" - also gates automatic reuse
+# density reporting, not just the reuse itself (extract_fields reuses a correction after a
+# single confirmation; this threshold is about what's worth surfacing as a trend).
+ADAPTIVE_THRESHOLD = 2
+INTEGRATION_URL_VARS = {
+    "LRMS": "LRMS_BASE_URL", "DILRMP": "DILRMP_BASE_URL", "GeoServer": "GEOSERVER_URL",
+    "Registration": "REGISTRATION_API_URL", "Notifications": "NOTIFICATION_GATEWAY_URL",
+}
+INTEGRATION_TOKEN_VARS = {
+    "LRMS": "LRMS_API_TOKEN", "DILRMP": "DILRMP_API_TOKEN", "GeoServer": "GEOSERVER_API_TOKEN",
+    "Registration": "REGISTRATION_API_TOKEN", "Notifications": "NOTIFICATION_GATEWAY_TOKEN",
+}
 
 
 def add_audit(db: Session, event_type: str, actor: str, action: str, document_id: str | None = None, details: str = "") -> None:
@@ -63,6 +78,26 @@ def add_audit(db: Session, event_type: str, actor: str, action: str, document_id
 
 def add_notification(db: Session, title: str, message: str, level: str = "info", user_id: int | None = None) -> None:
     db.add(Notification(user_id=user_id, title=title, message=message, level=level))
+
+
+def _call_external_json(base_url: str, path: str, payload: dict | None, token: str = "", method: str = "POST") -> tuple[int, dict | None, str]:
+    """Call an external connector and report what actually happened, instead of the
+    unconditional 'not configured' this used to return regardless of the URL on file."""
+    request = urllib.request.Request(
+        base_url.rstrip("/") + path, data=json.dumps(payload).encode("utf-8") if payload is not None else None, method=method,
+        headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read()
+            try:
+                return response.status, (json.loads(raw) if raw else None), ""
+            except json.JSONDecodeError:
+                return response.status, None, "Connector response was not valid JSON."
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, exc.read().decode("utf-8", "replace")[:500]
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, None, str(exc)[:500]
 
 
 def seed_system_data() -> None:
@@ -232,6 +267,19 @@ def add_revision(db: Session, document: Document, actor: str, action: str) -> No
     db.add(RecordRevision(document_id=document.id, version=document.version, actor=actor, action=action, snapshot_json=json.dumps(snapshot)))
 
 
+def build_correction_lookup(db: Session, language: str) -> dict[tuple[str, str], str]:
+    """(field_label, raw OCR value) -> the value a reviewer confirmed it should be, drawn
+    from this language's FieldCorrection history - the feedback loop extract_fields reuses
+    to resolve a recurring misread without a human correcting it twice."""
+    rows = db.scalars(select(FieldCorrection).where(FieldCorrection.language == language).order_by(FieldCorrection.created_at))
+    lookup: dict[tuple[str, str], str] = {}
+    for row in rows:
+        raw = row.predicted_value.strip()
+        if raw:
+            lookup[(row.field_label, raw)] = row.corrected_value
+    return lookup
+
+
 def process_document(document_id: str, db: Session) -> None:
     document = get_document_or_404(db, document_id)
     if not document.storage_name:
@@ -242,7 +290,8 @@ def process_document(document_id: str, db: Session) -> None:
     document.ocr_text = text
     document.ocr_engine = engine_name
     document.language = detect_language(text, document.language)
-    for result in extract_fields(text, document.district, word_confidences, engine_name):
+    corrections = build_correction_lookup(db, document.language)
+    for result in extract_fields(text, document.district, word_confidences, engine_name, corrections):
         db.add(ExtractedField(document_id=document.id, **result))
     db.flush()
     scores = [field.confidence for field in document.fields]
@@ -752,13 +801,28 @@ def integration_status(_: User = Depends(require_roles("Administrator"))):
 
 
 @app.post("/api/integrations/{key}/test")
-def test_integration(key: str, _: User = Depends(require_roles("Administrator"))):
-    return {"key": key, "connected": False, "status": 503, "message": "External endpoint not configured. Set connector URL in environment."}
+def test_integration(key: str, db: Session = Depends(get_db), user: User = Depends(require_roles("Administrator"))):
+    base_url = os.getenv(INTEGRATION_URL_VARS.get(key, ""), "")
+    if not base_url:
+        return {"key": key, "connected": False, "status": 503, "message": "External endpoint not configured. Set connector URL in environment."}
+    status, _body, error = _call_external_json(base_url, "/health", None, os.getenv(INTEGRATION_TOKEN_VARS.get(key, ""), ""), method="GET")
+    connected = 200 <= status < 300
+    add_audit(db, "sync", user.display_name, f"tested integration {key}", None, f"status={status}" + (f"; {error}" if error else ""))
+    db.commit()
+    return {"key": key, "connected": connected, "status": status, "message": error or "Connector responded."}
 
 
 @app.post("/api/integrations/{key}/sync/{document_id}")
-def sync_integration(key: str, document_id: str, _: User = Depends(require_roles("Administrator", "Verification Officer"))):
-    return {"key": key, "record_id": document_id, "synchronized": False, "status": 503, "message": "External endpoint not configured."}
+def sync_integration(key: str, document_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles("Administrator", "Verification Officer"))):
+    base_url = os.getenv(INTEGRATION_URL_VARS.get(key, ""), "")
+    if not base_url:
+        return {"key": key, "record_id": document_id, "synchronized": False, "status": 503, "message": "External endpoint not configured."}
+    document = get_document_or_404(db, document_id)
+    status, body, error = _call_external_json(base_url, "/records", canonical_record_payload(document), os.getenv(INTEGRATION_TOKEN_VARS.get(key, ""), ""))
+    synchronized = 200 <= status < 300
+    add_audit(db, "sync", user.display_name, f"synchronized {document_id} with {key}", document_id, f"status={status}" + (f"; {error}" if error else ""))
+    db.commit()
+    return {"key": key, "record_id": document_id, "synchronized": synchronized, "status": status, "message": error or "Accepted by connector.", "response": body}
 
 
 @app.get("/api/model/metrics")
@@ -781,23 +845,26 @@ def model_metrics(db: Session = Depends(get_db), _: User = Depends(require_roles
         .order_by(func.count().desc())
     ).all()
     corr_freq = [{"field_label": row.field_label, "corrections": row.corrections} for row in corrections_query]
-    if not corr_freq:
-        corr_freq = [
-            {"field_label": "Plot area", "corrections": 14},
-            {"field_label": "Khasra number", "corrections": 9},
-            {"field_label": "Land classification", "corrections": 7},
-            {"field_label": "Landowner name", "corrections": 5},
-        ]
+    # A "learned pattern" is a (field, language, outcome) a reviewer has confirmed at least
+    # ADAPTIVE_THRESHOLD times - this is the same signal extract_fields already acts on for
+    # any single confirmed correction; the threshold here is only about what is common enough
+    # to report as a trend, not a gate on reuse itself.
+    learned_query = db.execute(
+        select(FieldCorrection.field_label, FieldCorrection.language, FieldCorrection.corrected_value, func.count().label("occurrences"))
+        .group_by(FieldCorrection.field_label, FieldCorrection.language, FieldCorrection.corrected_value)
+        .having(func.count() >= ADAPTIVE_THRESHOLD)
+        .order_by(func.count().desc())
+    ).all()
     learned = [
-        {"field_label": "Plot area", "language": "Hindi", "predicted_value": "१.३७ हे०", "corrected_value": "1.37 hectare", "occurrences": 12},
-        {"field_label": "Khasra number", "language": "Hindi", "predicted_value": "८८/१", "corrected_value": "88/1", "occurrences": 8},
-        {"field_label": "Land classification", "language": "Hindi", "predicted_value": "कृषि", "corrected_value": "Agricultural", "occurrences": 6},
+        {"field_label": row.field_label, "language": row.language, "corrected_value": row.corrected_value, "occurrences": row.occurrences}
+        for row in learned_query
     ]
     return {
-        "language_performance": lang_perf or [{"language": "Hindi", "records": 4, "average_confidence": 91.2, "verified": 3}],
+        "language_performance": lang_perf,
         "correction_frequency": corr_freq,
         "learned_patterns": learned,
-        "adaptive_threshold": 2,
+        "learned_patterns_message": None if learned else f"No pattern has been confirmed {ADAPTIVE_THRESHOLD}+ times yet - corrections are reused after a single confirmation, but need {ADAPTIVE_THRESHOLD} to be reported here as a trend.",
+        "adaptive_threshold": ADAPTIVE_THRESHOLD,
         "mechanism": "Human-verified correction memory with language- and field-specific reuse",
     }
 
@@ -894,11 +961,9 @@ async def import_parcels(request: Request, db: Session = Depends(get_db), _: Use
     return {"imported": count}
 
 
-@app.get("/api/integration/records/{document_id}")
-def interoperable_record(document_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(*READ_ROLES))):
-    document = get_document_or_404(db, document_id)
+def canonical_record_payload(document: Document) -> dict:
     values = {field.label: field.value for field in document.fields}
-    return JSONResponse({
+    return {
         "schema": "https://dhara.gov.in/schemas/land-record/v1",
         "record_id": document.id,
         "record_version": document.version,
@@ -909,7 +974,13 @@ def interoperable_record(document_id: str, db: Session = Depends(get_db), _: Use
         "parcel": {"area": values.get("Plot area", ""), "classification": values.get("Land classification", "")},
         "transactions": {"mutation_reference": values.get("Mutation reference", ""), "registration_information": values.get("Registration information", "")},
         "provenance": {"source_filename": document.filename, "sha256": document.checksum_sha256, "ocr_engine": document.ocr_engine, "confidence": document.confidence, "updated_at": document.updated_at.isoformat()},
-    }, headers={"X-Dhara-Schema-Version": "1"})
+    }
+
+
+@app.get("/api/integration/records/{document_id}")
+def interoperable_record(document_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(*READ_ROLES))):
+    document = get_document_or_404(db, document_id)
+    return JSONResponse(canonical_record_payload(document), headers={"X-Dhara-Schema-Version": "1"})
 
 
 @app.get("/api/stats", response_model=StatsOut)
