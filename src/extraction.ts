@@ -1,5 +1,42 @@
 import type { ExtractedField, PlotRow } from './data'
 
+export interface OcrWord { text: string; confidence: number }
+
+const NUMBER_LIKE_LABELS = new Set(['Survey number', 'Khasra number', 'Khata number', 'Mutation reference'])
+
+function stripSpaces(value: string): string {
+  return value.replace(/\s+/g, '')
+}
+
+// Tesseract's own per-word confidence, averaged over just the words that make up this
+// field's matched source line - so one badly recognized line scores accordingly instead of
+// hiding behind the whole page's average confidence.
+function lineWordConfidence(words: OcrWord[], sourceLine: string): number | null {
+  const normalizedLine = stripSpaces(sourceLine)
+  if (!words.length || !normalizedLine) return null
+  let total = 0
+  let count = 0
+  for (const word of words) {
+    const normalizedWord = stripSpaces(word.text)
+    if (normalizedWord.length >= 2 && normalizedLine.includes(normalizedWord)) {
+      total += word.confidence
+      count += 1
+    }
+  }
+  return count ? total / count : null
+}
+
+// A 0-1 multiplier scoring whether the captured value actually looks like this field,
+// independent of how confidently its characters were recognized - a clean OCR read of the
+// wrong text is still a bad extraction.
+function matchQuality(label: (typeof canonicalFieldLabels)[number], value: string): number {
+  let quality = 1
+  if (value.trim().length < 2) quality *= 0.5
+  const digitized = normalizeIndianDigits(value)
+  if ((NUMBER_LIKE_LABELS.has(label) || label === 'Plot area') && !/\d/.test(digitized)) quality *= 0.55
+  return quality
+}
+
 export const canonicalFieldLabels = [
   'Landowner name', 'Survey number', 'Khasra number', 'Khata number', 'Plot area', 'Village',
   'Tehsil', 'District', 'Land classification', 'Ownership details', 'Mutation reference', 'Registration information',
@@ -152,7 +189,7 @@ export function detectScriptLanguage(text: string, fallback: string): string {
   return fallback === 'Auto-detect' ? 'Unknown' : fallback
 }
 
-export function extractStructuredFields(text: string, district: string, ocrConfidence: number): ExtractedField[] {
+export function extractStructuredFields(text: string, district: string, ocrConfidence: number, words: OcrWord[] = []): ExtractedField[] {
   const lines = text.split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean)
   // A tabular register (Bihar-style Jamabandi) lists Khata/Khasra/area per plot row, not as a
   // single "label: value" pair - the ordinary line-based match above can only find the table's
@@ -169,7 +206,12 @@ export function extractStructuredFields(text: string, district: string, ocrConfi
     // column for at all) - so only fall back to it when the document isn't already known-tabular.
     let value = match?.value || (firstPlot ? '' : numericFallback(text, label))
     let original = match?.source || (value ? value : 'Not detected')
-    let confidence = value ? Math.max(45, Math.min(98, Math.round(ocrConfidence - (match ? 4 : 14)))) : 0
+    let confidence = 0
+    if (value) {
+      const wordBase = lineWordConfidence(words, original)
+      const base = wordBase ?? Math.max(0, ocrConfidence - (match ? 4 : 14))
+      confidence = Math.max(30, Math.min(98, Math.round(base * matchQuality(label, value))))
+    }
     if (firstPlot && label === 'Khata number') { value = firstPlot.khata; original = plotSource; confidence = 95 }
     if (firstPlot && label === 'Khasra number') { value = firstPlot.khasra; original = plotSource; confidence = 95 }
     if (firstPlot && label === 'Plot area') { value = firstPlot.area; original = plotSource; confidence = 95 }

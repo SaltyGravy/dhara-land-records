@@ -128,15 +128,20 @@ def seed_system_data() -> None:
                     ))
 
         if not db.scalar(select(func.count()).select_from(Parcel)):
+            # Coordinates are scaled so each polygon's geometric area (see
+            # validation._geometry_area_hectares) lands within the cross-modal check's
+            # tolerance of the area_hectares stated below - the original placeholder
+            # coordinates described parcels roughly 20x larger than their stated area,
+            # which meant the demo data failed its own consistency check on day one.
             parcel_rows = [
-                ("88/1", "Sunita Devi", 1.37, "Agricultural — Irrigated", "Verified", "LR-2026-04181", [[82.9200,25.5400],[82.9250,25.5412],[82.9260,25.5370],[82.9220,25.5352],[82.9195,25.5370],[82.9200,25.5400]]),
-                ("88/2", "Ram Kumar", .84, "Agricultural", "Verified", None, [[82.9250,25.5412],[82.9300,25.5403],[82.9295,25.5367],[82.9260,25.5370],[82.9250,25.5412]]),
-                ("89/1", "Mohan Lal", 1.12, "Agricultural", "Needs review", None, [[82.9195,25.5370],[82.9220,25.5352],[82.9212,25.5310],[82.9180,25.5315],[82.9170,25.5340],[82.9195,25.5370]]),
-                ("89/2", "Village Commons", 2.08, "Fallow land", "Verified", None, [[82.9220,25.5352],[82.9260,25.5370],[82.9295,25.5367],[82.9285,25.5317],[82.9212,25.5310],[82.9220,25.5352]]),
-                ("90", "Asha Devi", 1.62, "Agricultural", "Verified", None, [[82.9300,25.5403],[82.9340,25.5385],[82.9332,25.5334],[82.9285,25.5317],[82.9295,25.5367],[82.9300,25.5403]]),
-                ("91/1", "Rakesh Singh", 1.09, "Orchard", "Verified", None, [[82.9180,25.5315],[82.9212,25.5310],[82.9225,25.5265],[82.9190,25.5252],[82.9160,25.5280],[82.9180,25.5315]]),
-                ("91/2", "Shyam Narayan", 1.74, "Agricultural", "Needs review", None, [[82.9212,25.5310],[82.9285,25.5317],[82.9290,25.5268],[82.9225,25.5265],[82.9212,25.5310]]),
-                ("92", "Iqbal Ahmad", 1.46, "Residential", "Verified", None, [[82.9285,25.5317],[82.9332,25.5334],[82.9345,25.5280],[82.9320,25.5252],[82.9290,25.5268],[82.9285,25.5317]]),
+                ("88/1", "Sunita Devi", 1.37, "Agricultural — Irrigated", "Verified", "LR-2026-04181", [[82.9238,25.5351],[82.9249,25.5354],[82.9251,25.5345],[82.9243,25.5341],[82.9237,25.5345],[82.9238,25.5351]]),
+                ("88/2", "Ram Kumar", .84, "Agricultural", "Verified", None, [[82.9249,25.5354],[82.9259,25.5352],[82.9258,25.5344],[82.9251,25.5345],[82.9249,25.5354]]),
+                ("89/1", "Mohan Lal", 1.12, "Agricultural", "Needs review", None, [[82.9237,25.5345],[82.9243,25.5341],[82.9241,25.5333],[82.9234,25.5334],[82.9232,25.5339],[82.9237,25.5345]]),
+                ("89/2", "Village Commons", 2.08, "Fallow land", "Verified", None, [[82.9243,25.5341],[82.9251,25.5345],[82.9258,25.5344],[82.9256,25.5334],[82.9241,25.5333],[82.9243,25.5341]]),
+                ("90", "Asha Devi", 1.62, "Agricultural", "Verified", None, [[82.9259,25.5352],[82.9267,25.5348],[82.9266,25.5338],[82.9256,25.5334],[82.9258,25.5344],[82.9259,25.5352]]),
+                ("91/1", "Rakesh Singh", 1.09, "Orchard", "Verified", None, [[82.9234,25.5334],[82.9241,25.5333],[82.9244,25.5323],[82.9236,25.5321],[82.9230,25.5327],[82.9234,25.5334]]),
+                ("91/2", "Shyam Narayan", 1.74, "Agricultural", "Needs review", None, [[82.9241,25.5333],[82.9256,25.5334],[82.9257,25.5324],[82.9244,25.5323],[82.9241,25.5333]]),
+                ("92", "Iqbal Ahmad", 1.46, "Residential", "Verified", None, [[82.9256,25.5334],[82.9266,25.5338],[82.9268,25.5327],[82.9263,25.5321],[82.9257,25.5324],[82.9256,25.5334]]),
             ]
             for khasra, owner, area, classification, status, record_id, coordinates in parcel_rows:
                 db.add(Parcel(khasra_number=khasra, owner=owner, area_hectares=area, classification=classification, status=status, village="Baragaon", tehsil="Pindra", district="Varanasi", record_id=record_id, geometry_geojson=json.dumps({"type": "Polygon", "coordinates": [coordinates]})))
@@ -233,11 +238,11 @@ def process_document(document_id: str, db: Session) -> None:
         raise ValueError("Source file is unavailable")
     encrypted_path = UPLOAD_DIR / document.storage_name
     with materialize_decrypted(encrypted_path, Path(document.filename).suffix) as source_path:
-        text, engine_name = extract_text(source_path, document.mime_type, document.language)
+        text, engine_name, word_confidences = extract_text(source_path, document.mime_type, document.language)
     document.ocr_text = text
     document.ocr_engine = engine_name
     document.language = detect_language(text, document.language)
-    for result in extract_fields(text, document.district):
+    for result in extract_fields(text, document.district, word_confidences, engine_name):
         db.add(ExtractedField(document_id=document.id, **result))
     db.flush()
     scores = [field.confidence for field in document.fields]
@@ -940,9 +945,17 @@ def update_parcel(parcel_id: int, update: ParcelUpdate, db: Session = Depends(ge
     parcel = db.get(Parcel, parcel_id)
     if not parcel:
         raise HTTPException(status_code=404, detail="Parcel not found")
+    record_id_changed = "record_id" in update.model_dump(exclude_unset=True)
     for key, value in update.model_dump(exclude_unset=True).items():
         setattr(parcel, key, value)
     add_audit(db, "map", user.display_name, f"updated cadastral parcel {parcel.khasra_number}", parcel.record_id)
+    # Linking (or relinking) a parcel to a record is exactly when the OCR-extracted Plot area
+    # can newly be checked against this parcel's mapped geometry - re-run validation on the
+    # linked document so that cross-modal check actually surfaces.
+    if record_id_changed and parcel.record_id:
+        linked_document = db.scalar(select(Document).options(selectinload(Document.fields)).where(Document.id == parcel.record_id))
+        if linked_document:
+            linked_document.validation_issues = json.dumps(validate_record(db, linked_document))
     db.commit()
     db.refresh(parcel)
     return parcel_feature(parcel)

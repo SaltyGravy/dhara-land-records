@@ -1,7 +1,7 @@
 import { GlobalWorkerOptions, getDocument, type PDFPageProxy } from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { createWorker, OEM, PSM, type LoggerMessage } from 'tesseract.js'
-import { detectScriptLanguage, extractPlotRows, extractStructuredFields } from './extraction'
+import { detectScriptLanguage, extractPlotRows, extractStructuredFields, type OcrWord } from './extraction'
 import type { ExtractedField, PlotRow } from './data'
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
@@ -139,9 +139,26 @@ async function pdfPages(file: File, progress: Progress): Promise<{ textLayer: st
   return { textLayer: text.join('\n').trim(), canvases, firstPageCanvas, pageCount: pdf.numPages, warnings }
 }
 
-async function runOcr(canvases: HTMLCanvasElement[], requestedLanguage: string, progress: Progress, progressStart: number, progressSpan: number): Promise<{ text: string; confidence: number; code: string }> {
+// Tesseract.js only populates result.data.blocks (and the per-word confidences nested in
+// it) when explicitly asked for via the `output` argument - by default it's null.
+function flattenWords(page: Tesseract.Page): OcrWord[] {
+  const words: OcrWord[] = []
+  for (const block of page.blocks ?? []) {
+    for (const paragraph of block.paragraphs) {
+      for (const line of paragraph.lines) {
+        for (const word of line.words) {
+          if (word.text.trim()) words.push({ text: word.text, confidence: word.confidence })
+        }
+      }
+    }
+  }
+  return words
+}
+
+async function runOcr(canvases: HTMLCanvasElement[], requestedLanguage: string, progress: Progress, progressStart: number, progressSpan: number): Promise<{ text: string; confidence: number; code: string; words: OcrWord[] }> {
   const code = languageCodes[requestedLanguage] || languageCodes['Auto-detect']
   const pageTexts: string[] = []
+  const words: OcrWord[] = []
   let confidenceTotal = 0
   progress(`Loading ${requestedLanguage === 'Auto-detect' ? 'Hindi + English' : requestedLanguage} OCR model`, progressStart)
   const worker = await createWorker(code, OEM.LSTM_ONLY, {
@@ -153,12 +170,13 @@ async function runOcr(canvases: HTMLCanvasElement[], requestedLanguage: string, 
     await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO, preserve_interword_spaces: '1' })
     for (let index = 0; index < canvases.length; index += 1) {
       progress(`OCR page ${index + 1}/${canvases.length}`, progressStart + 5 + index / Math.max(canvases.length, 1) * progressSpan)
-      const result = await worker.recognize(canvases[index])
+      const result = await worker.recognize(canvases[index], {}, { blocks: true })
       pageTexts.push(result.data.text)
       confidenceTotal += result.data.confidence
+      words.push(...flattenWords(result.data))
     }
   } finally { await worker.terminate() }
-  return { text: pageTexts.join('\n').trim(), confidence: canvases.length ? confidenceTotal / canvases.length : 0, code }
+  return { text: pageTexts.join('\n').trim(), confidence: canvases.length ? confidenceTotal / canvases.length : 0, code, words }
 }
 
 // Fields prone to dropping characters on PDFs whose embedded font has an incomplete
@@ -192,17 +210,19 @@ export async function recognizeLandRecord(file: File, requestedLanguage: string,
   }
 
   const usedTextLayer = isPdf && text.length >= 80
+  let words: OcrWord[] = []
   if (!usedTextLayer) {
     const result = await runOcr(canvases, requestedLanguage, progress, 30, 50)
     text = result.text
     confidence = result.confidence
     engine = `Tesseract.js ${result.code} · enhanced browser OCR`
+    words = result.words
   }
 
   if (!text) throw new Error('No text could be recognized. The source remains stored for manual verification.')
   const language = detectScriptLanguage(text, requestedLanguage)
   progress('Classifying land-record fields', 85)
-  const extractedFields = extractStructuredFields(text, district, confidence)
+  const extractedFields = extractStructuredFields(text, district, confidence, words)
   const plot_rows = extractPlotRows(text)
 
   // The text layer succeeded (so the fallback OCR above never ran) - still run OCR on just
@@ -211,7 +231,7 @@ export async function recognizeLandRecord(file: File, requestedLanguage: string,
   if (usedTextLayer && firstPageCanvas) {
     try {
       const ocrResult = await runOcr([firstPageCanvas], requestedLanguage, progress, 86, 8)
-      const ocrFields = extractStructuredFields(ocrResult.text, district, ocrResult.confidence)
+      const ocrFields = extractStructuredFields(ocrResult.text, district, ocrResult.confidence, ocrResult.words)
       for (const label of OCR_BACKFILL_LABELS) {
         const current = extractedFields.find(field => field.label === label)
         const fromOcr = ocrFields.find(field => field.label === label)

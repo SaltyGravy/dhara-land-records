@@ -58,7 +58,56 @@ def _preprocess_image(source: Path, destination: Path) -> None:
         image.save(destination, format="PNG", optimize=True)
 
 
-def _run_tesseract(image: Path, language: str) -> str:
+# A word-confidence span: the [start, end) character range it occupies in the reconstructed
+# text this module hands back, and Tesseract's own 0-100 confidence for that word.
+WordConfidence = tuple[int, int, float]
+
+
+def _parse_tsv(tsv_text: str) -> tuple[str, list[WordConfidence]]:
+    """Reconstruct page text from Tesseract's TSV output, alongside each recognized word's
+    confidence and its character offsets in that reconstructed text - so a field's extracted
+    value can be scored against the actual OCR confidence of the words it came from, rather
+    than a single page-wide average."""
+    lines = tsv_text.splitlines()
+    if len(lines) < 2:
+        return "", []
+    header = lines[0].split("\t")
+    try:
+        col = {name: header.index(name) for name in ("level", "line_num", "par_num", "block_num", "conf", "text")}
+    except ValueError:
+        return "", []
+    parts: list[str] = []
+    spans: list[WordConfidence] = []
+    position = 0
+    current_line_key: tuple[str, str, str] | None = None
+    for row in lines[1:]:
+        cols = row.split("\t")
+        if len(cols) <= max(col.values()) or cols[col["level"]] != "5":
+            continue
+        word = cols[col["text"]]
+        try:
+            confidence = float(cols[col["conf"]])
+        except ValueError:
+            confidence = -1
+        if not word or confidence < 0:
+            continue
+        line_key = (cols[col["block_num"]], cols[col["par_num"]], cols[col["line_num"]])
+        if current_line_key is None:
+            pass
+        elif line_key != current_line_key:
+            parts.append("\n")
+            position += 1
+        else:
+            parts.append(" ")
+            position += 1
+        parts.append(word)
+        spans.append((position, position + len(word), confidence))
+        position += len(word)
+        current_line_key = line_key
+    return "".join(parts), spans
+
+
+def _run_tesseract(image: Path, language: str) -> tuple[str, list[WordConfidence]]:
     lang = LANGUAGE_CODES.get(language, "hin+eng")
     available = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, check=False).stdout
     requested = [code for code in lang.split("+") if code in available.splitlines()]
@@ -74,16 +123,19 @@ def _run_tesseract(image: Path, language: str) -> str:
         command = ["tesseract", str(ocr_source), "stdout", "--psm", "6", "-c", "preserve_interword_spaces=1"]
         if requested:
             command.extend(["-l", "+".join(requested)])
+        command.append("tsv")
         result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
-        return result.stdout.strip()
+        return _parse_tsv(result.stdout)
 
 
-def extract_text(path: Path, mime_type: str, language: str) -> tuple[str, str]:
+def extract_text(path: Path, mime_type: str, language: str) -> tuple[str, str, list[WordConfidence]]:
     if mime_type == "application/pdf" or path.suffix.lower() == ".pdf":
         try:
             text = "\n".join(page.extract_text() or "" for page in PdfReader(path).pages).strip()
             if len(text) >= 30:
-                return text, "PDF text layer"
+                # Extracted straight from the PDF's text layer, not recognized - there is no
+                # OCR confidence to attach; extract_fields treats the absence as "not OCR'd".
+                return text, "PDF text layer", []
         except Exception:
             text = ""
 
@@ -92,12 +144,21 @@ def extract_text(path: Path, mime_type: str, language: str) -> tuple[str, str]:
                 prefix = Path(temp_dir) / "page"
                 subprocess.run(["pdftoppm", "-jpeg", "-r", "200", str(path), str(prefix)], capture_output=True, timeout=180, check=False)
                 pages = sorted(Path(temp_dir).glob("page-*.jpg"))
-                return "\n".join(_run_tesseract(page, language) for page in pages).strip(), "Tesseract OCR"
-        return text, "OCR unavailable"
+                combined_text: list[str] = []
+                combined_spans: list[WordConfidence] = []
+                offset = 0
+                for page in pages:
+                    page_text, page_spans = _run_tesseract(page, language)
+                    combined_spans.extend((start + offset, end + offset, confidence) for start, end, confidence in page_spans)
+                    combined_text.append(page_text)
+                    offset += len(page_text) + 1  # +1 for the "\n" joiner below
+                return "\n".join(combined_text).strip(), "Tesseract OCR", combined_spans
+        return text, "OCR unavailable", []
 
     if shutil.which("tesseract"):
-        return _run_tesseract(path, language), "Tesseract OCR"
-    return "", "OCR unavailable"
+        text, spans = _run_tesseract(path, language)
+        return text, "Tesseract OCR", spans
+    return "", "OCR unavailable", []
 
 
 FIELD_RULES: list[tuple[str, list[str]]] = [
@@ -119,14 +180,51 @@ FIELD_RULES: list[tuple[str, list[str]]] = [
 ]
 
 
-def extract_fields(text: str, district: str) -> list[dict]:
+# Fields expected to contain a digit; a "match" with none is almost always an OCR/regex
+# misfire (e.g. the label matched but swallowed the next line's unrelated text) and should
+# score lower even though the pattern technically matched.
+_NUMBER_LIKE_LABELS = {"Survey number", "Khasra number", "Khata number", "Mutation reference"}
+_INDIC_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+
+def _word_confidence(word_confidences: list[WordConfidence], start: int, end: int) -> float | None:
+    overlapping = [confidence for word_start, word_end, confidence in word_confidences if word_start < end and word_end > start]
+    return sum(overlapping) / len(overlapping) if overlapping else None
+
+
+def _match_quality(label: str, value: str) -> float:
+    """A 0-1 multiplier scoring whether the captured value actually looks like this field,
+    independent of how confidently the underlying characters were recognized - a clean OCR
+    read of the wrong text is still a bad extraction."""
+    quality = 1.0
+    if len(value.strip()) < 2:
+        quality *= 0.5
+    if label in _NUMBER_LIKE_LABELS and not re.search(r"[0-9०-९]", value):
+        quality *= 0.55
+    elif label == "Plot area" and not re.search(r"\d", value.translate(_INDIC_DIGITS)):
+        quality *= 0.55
+    return quality
+
+
+def extract_fields(text: str, district: str, word_confidences: list[WordConfidence] | None = None, engine: str = "") -> list[dict]:
+    word_confidences = word_confidences or []
+    # No recognized-word confidences to draw on: an un-OCR'd PDF text layer is closer to
+    # ground truth than a guess, so it starts high; anything else genuinely doesn't know.
+    base_without_words = 97.0 if engine == "PDF text layer" else 65.0
     compact = re.sub(r"[ \t]+", " ", text)
     fields: list[dict] = []
     for label, patterns in FIELD_RULES:
-        match = next((match for pattern in patterns if (match := re.search(pattern, compact, flags=re.IGNORECASE))), None)
+        match = None
+        for pattern in patterns:
+            match = re.search(pattern, compact, flags=re.IGNORECASE)
+            if match:
+                break
         if match:
             value = match.group(1).strip(" .:-")
-            confidence = 91.0 if label in {"District", "Village", "Survey number", "Khasra number", "Khata number"} else 86.0
+            base = _word_confidence(word_confidences, *match.span(1))
+            if base is None:
+                base = base_without_words
+            confidence = round(max(0.0, min(100.0, base * _match_quality(label, value))), 1)
             fields.append({"label": label, "value": value, "original": match.group(0).strip(), "confidence": confidence, "valid": True})
         elif label == "District" and district != "Unassigned":
             fields.append({"label": label, "value": district, "original": "Upload metadata", "confidence": 100.0, "valid": True})
