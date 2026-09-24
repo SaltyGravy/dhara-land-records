@@ -25,16 +25,35 @@ function stateFromSlug(slug: string): string | null {
   return indiaStateNames.find(name => slugifyState(name) === slug) || null
 }
 
+// A fixed cycling palette (not a real four-colour-theorem solve, just enough hues in
+// rotation that a demo map reads as "many distinct states" rather than one flat fill).
+const REGION_PALETTE = ['#4f8a6b', '#e0735c', '#3f7ea6', '#e8b04f', '#8a6bb0', '#5fa892', '#c9614f', '#5b7fc7', '#d4995a', '#6f9e5c', '#b3567e', '#4d97a0']
+
 function IndiaMap({ selected, onSelect }: { selected: string | null; onSelect: (name: string) => void }) {
   return <svg className="india-map" viewBox={INDIA_MAP_VIEWBOX} role="group" aria-label="Map of India - select a state">
-    {indiaMapRegions.map(region => <g
+    {indiaMapRegions.map((region, index) => <g
       key={region.name}
       className={`india-map-region ${selected === region.name ? 'active' : ''}`}
+      style={{ '--region-color': REGION_PALETTE[index % REGION_PALETTE.length] } as React.CSSProperties}
       role="button" tabIndex={0} aria-label={region.name}
       onClick={() => onSelect(region.name)}
       onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(region.name) } }}
-    ><title>{region.name}</title>{region.paths.map((d, index) => <path key={index} d={d}/>)}</g>)}
+    ><title>{region.name}</title>{region.paths.map((d, i) => <path key={i} d={d}/>)}<text x={region.label[0]} y={region.label[1]}>{region.name}</text></g>)}
   </svg>
+}
+
+function StateLandingPage({ onSelectState }: { onSelectState: (name: string) => void }) {
+  return <main className="state-landing">
+    <div className="login-brand"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>भूमि अभिलेख</small></span></div>
+    <div className="state-landing-body">
+      <span className="eyebrow">NATIONAL LAND RECORDS NETWORK</span>
+      <h1>Select your state</h1>
+      <p>Choose a state or union territory to open its land-records portal.</p>
+      <IndiaMap selected={null} onSelect={onSelectState}/>
+      <div className="india-map-extra">{STATES_WITHOUT_MAP_SHAPE.map(name => <button type="button" key={name} onClick={() => onSelectState(name)}>{name}</button>)}</div>
+    </div>
+    <a className="citizen-link state-landing-citizen" href="/citizen"><UserRound size={16}/>Citizen services and request tracking</a>
+  </main>
 }
 
 type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'audit' | 'settings'
@@ -90,13 +109,7 @@ function LoginScreen({ onLogin, initialError = '', routeState, onSelectState }: 
     }
   }
   return <main className="login-screen">
-    <section className="login-story"><div className="login-brand"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>भूमि अभिलेख</small></span></div><div className="login-message"><span className="eyebrow">{routeState ? 'STATE LAND RECORDS PORTAL' : 'INTELLIGENT LAND ADMINISTRATION'}</span>{routeState ? <h1>{routeState}<br/>Land Records</h1> : <h1>Trusted records.<br/>Transparent governance.</h1>}<p>Securely digitize, validate, and connect legacy land records across languages, districts, and cadastral maps.</p>{!routeState && <div className="login-assurance"><span><ShieldCheck size={18}/>Encrypted documents</span><span><FileCheck2 size={18}/>Human-verified accuracy</span><span><History size={18}/>Complete audit history</span></div>}
-      <div className="india-map-panel">
-        <div className="india-map-head"><span>{routeState ? `Selected: ${routeState}` : 'Select a state to open its portal'}</span>{routeState && <button type="button" className="india-map-clear" onClick={() => onSelectState(null)}>Show all states</button>}</div>
-        <IndiaMap selected={routeState} onSelect={name => onSelectState(name)}/>
-        <div className="india-map-extra">{STATES_WITHOUT_MAP_SHAPE.map(name => <button type="button" key={name} className={routeState === name ? 'active' : ''} onClick={() => onSelectState(name)}>{name}</button>)}</div>
-      </div>
-    </div><small>{routeState || 'Uttar Pradesh'} Land Records Mission · Authorized access only</small></section>
+    <section className="login-story"><div className="login-brand"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>भूमि अभिलेख</small></span></div><div className="login-message"><span className="eyebrow">{routeState ? 'STATE LAND RECORDS PORTAL' : 'INTELLIGENT LAND ADMINISTRATION'}</span>{routeState ? <h1>{routeState}<br/>Land Records</h1> : <h1>Trusted records.<br/>Transparent governance.</h1>}<p>Securely digitize, validate, and connect legacy land records across languages, districts, and cadastral maps.</p><div className="login-assurance"><span><ShieldCheck size={18}/>Encrypted documents</span><span><FileCheck2 size={18}/>Human-verified accuracy</span><span><History size={18}/>Complete audit history</span></div>{routeState && <button type="button" className="india-map-clear" onClick={() => onSelectState(null)}><ArrowLeft size={14}/>Choose a different state</button>}</div><small>{routeState || 'Uttar Pradesh'} Land Records Mission · Authorized access only</small></section>
     <section className="login-panel"><form onSubmit={submit}><div className="login-emblem"><ShieldCheck size={26}/></div><span className="eyebrow">SECURE OFFICIAL PORTAL</span><h2>Sign in to Dhara</h2><p>Use your authorized departmental account.</p>{ssoConfigured && <button type="button" className="btn secondary login-submit" disabled={loading} onClick={startSso}><ShieldCheck size={17}/>Government SSO</button>}<label>Email address<input type="email" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" required/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required/></label>{error && <div className="login-error"><AlertTriangle size={15}/>{error}</div>}<button className="btn primary login-submit" disabled={loading}>{loading ? <><RefreshCcw size={17} className="spin"/>Signing in…</> : <><LogIn size={17}/>Sign in securely</>}</button><a className="citizen-link" href="/citizen"><UserRound size={16}/>Citizen services and request tracking</a><div className="demo-credentials"><strong>Prototype account</strong><span>Administrator credentials are pre-filled until government SSO is configured.</span></div></form></section>
   </main>
 }
@@ -852,7 +865,9 @@ function App() {
 
   if (window.location.pathname === '/citizen') return <CitizenPortal/>
   if (authLoading) return <div className="app-loading"><span className="brand-mark"><span>ध</span></span><RefreshCcw className="spin"/>Preparing secure workspace…</div>
-  if (!user) return <LoginScreen onLogin={login} initialError={authError} routeState={routeState} onSelectState={navigateToState}/>
+  if (!user) return routeState
+    ? <LoginScreen onLogin={login} initialError={authError} routeState={routeState} onSelectState={navigateToState}/>
+    : <StateLandingPage onSelectState={navigateToState}/>
 
   return <div className="app-shell">
     <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} user={user} onLogout={logout} reviewCount={stats?.needs_review || 0}/>
