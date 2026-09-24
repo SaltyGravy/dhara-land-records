@@ -12,9 +12,10 @@ import { districtsForState, indiaStateNames } from './india'
 import { indiaMapRegions, INDIA_MAP_VIEWBOX } from './indiaMapPaths'
 import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion, type RegistryFlag } from './api'
 
-// States/UTs the source map geometry predates (2014 Telangana split, 2019 Ladakh split) or
-// never separated (Lakshadweep) - offered as plain buttons alongside the map instead of a
-// fabricated boundary shape. See src/indiaMapPaths.ts for the map's provenance/license.
+// Every state/UT in src/india.ts has real (or, for Puducherry/Lakshadweep, marker) map
+// geometry as of src/indiaMapPaths.ts - this stays computed rather than assumed empty so a
+// future state added to india.ts without matching map data surfaces as a plain button
+// instead of silently becoming unreachable.
 const STATES_WITHOUT_MAP_SHAPE = indiaStateNames.filter(name => !indiaMapRegions.some(region => region.name === name))
 
 function slugifyState(name: string): string {
