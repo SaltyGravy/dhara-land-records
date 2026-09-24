@@ -22,6 +22,8 @@
     "jose": "^6.1.0",
     "lucide-react": "latest",
     "pdfjs-dist": "^5.4.149",
+    "powerbi-client": "^2.24.1",
+    "powerbi-client-react": "^2.0.2",
     "react": "latest",
     "react-dom": "latest",
     "tesseract.js": "^6.0.1",
