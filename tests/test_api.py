@@ -144,7 +144,7 @@ def test_batch_gis_notifications_and_exports():
         assert client.get("/api/audit/integrity", headers=admin).json()["valid"] is True
         integrations = client.get("/api/integrations", headers=admin)
         assert integrations.status_code == 200
-        assert {item["key"] for item in integrations.json()} == {"LRMS", "DILRMP", "GeoServer", "Registration", "Notifications"}
+        assert {item["key"] for item in integrations.json()} == {"LRMS", "DILRMP", "GeoServer", "Registration", "Notifications", "Grafana"}
         assert client.get("/api/integrations", headers=viewer).status_code == 403
         canonical = client.get("/api/integration/records/LR-2026-04181", headers=viewer)
         assert canonical.status_code == 200
@@ -311,6 +311,29 @@ def test_integration_test_and_sync_against_a_real_mock_connector():
         os.environ.pop("LRMS_BASE_URL", None)
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_grafana_status_reports_not_configured_and_is_role_gated():
+    with TestClient(app) as client:
+        admin = auth(client, "admin@dhara.gov.in")
+        # No GRAFANA_DASHBOARD_URL is set in the test environment.
+        status = client.get("/api/integrations/grafana", headers=admin)
+        assert status.status_code == 200
+        body = status.json()
+        assert body["configured"] is False
+        assert "GRAFANA_DASHBOARD_URL" in body["message"]
+
+        os.environ["GRAFANA_DASHBOARD_URL"] = "https://example.grafana.net/public-dashboards/abc123"
+        try:
+            configured = client.get("/api/integrations/grafana", headers=admin)
+            assert configured.json() == {"configured": True, "dashboard_url": "https://example.grafana.net/public-dashboards/abc123"}
+        finally:
+            os.environ.pop("GRAFANA_DASHBOARD_URL", None)
+
+        # Only audit-capable roles (Administrator, Verification Officer, Auditor) may reach
+        # this endpoint - a Data Operator gets a plain 403, same as /api/audit.
+        operator = auth(client, "operator@dhara.gov.in")
+        assert client.get("/api/integrations/grafana", headers=operator).status_code == 403
 
 
 def test_login_and_me_report_the_users_own_state():

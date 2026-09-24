@@ -10,7 +10,7 @@ import {
 import { activity, districts, documents as initialDocuments, extractedFields, type DocumentStatus, type ExtractedField, type LandDocument, type PlotRow } from './data'
 import { districtsForState, indiaStateNames } from './india'
 import { indiaMapRegions, INDIA_MAP_VIEWBOX } from './indiaMapPaths'
-import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion, type RegistryFlag } from './api'
+import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type GrafanaStatus, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion, type RegistryFlag } from './api'
 
 // Every state/UT in src/india.ts has real (or, for Puducherry/Lakshadweep, marker) map
 // geometry as of src/indiaMapPaths.ts - this stays computed rather than assumed empty so a
@@ -57,7 +57,7 @@ function StateLandingPage({ onSelectState }: { onSelectState: (name: string) => 
   </main>
 }
 
-type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'audit' | 'settings'
+type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'analytics' | 'audit' | 'settings'
 
 const navigation: { id: Page; label: string; icon: typeof LayoutDashboard; count?: number }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -65,6 +65,7 @@ const navigation: { id: Page; label: string; icon: typeof LayoutDashboard; count
   { id: 'verification', label: 'Verification queue', icon: FileCheck2, count: 23 },
   { id: 'records', label: 'Land records', icon: FolderArchive },
   { id: 'gis', label: 'Cadastral map', icon: Map },
+  { id: 'analytics', label: 'Grafana analytics', icon: BarChart3 },
   { id: 'audit', label: 'Audit trail', icon: History },
 ]
 
@@ -74,6 +75,7 @@ const titles: Record<Page, { eyebrow: string; title: string; description: string
   verification: { eyebrow: 'HUMAN-IN-THE-LOOP', title: 'Verification workspace', description: 'Review uncertain extractions against the original document.' },
   records: { eyebrow: 'DIGITAL REPOSITORY', title: 'Land records', description: 'Search and manage every processed record in one place.' },
   gis: { eyebrow: 'SPATIAL RECORDS', title: 'Cadastral map', description: 'Explore digitized parcels and their linked ownership records.' },
+  analytics: { eyebrow: 'BUSINESS INTELLIGENCE', title: 'Grafana analytics', description: 'A live embedded Grafana dashboard built on the digitization programme’s data.' },
   audit: { eyebrow: 'GOVERNANCE & COMPLIANCE', title: 'Audit trail', description: 'A persisted history of authenticated system and user activity.' },
   settings: { eyebrow: 'ADMINISTRATION', title: 'Users & security', description: 'Manage authorized officials, access roles, and deployment controls.' },
 }
@@ -138,10 +140,10 @@ function CitizenPortal() {
 
 function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobileOpen, user, onLogout, reviewCount }: { page: Page; setPage: (p: Page) => void; collapsed: boolean; setCollapsed: (v: boolean) => void; mobileOpen: boolean; setMobileOpen: (v: boolean) => void; user: AuthUser; onLogout: () => void; reviewCount: number }) {
   const allowedPages: Record<AuthUser['role'], Page[]> = {
-    'Administrator': ['overview', 'upload', 'verification', 'records', 'gis', 'audit'],
-    'Verification Officer': ['overview', 'verification', 'records', 'gis', 'audit'],
+    'Administrator': ['overview', 'upload', 'verification', 'records', 'gis', 'analytics', 'audit'],
+    'Verification Officer': ['overview', 'verification', 'records', 'gis', 'analytics', 'audit'],
     'Data Operator': ['overview', 'upload', 'records', 'gis'],
-    'Auditor': ['overview', 'records', 'gis', 'audit'],
+    'Auditor': ['overview', 'records', 'gis', 'analytics', 'audit'],
     'Viewer': ['overview', 'records', 'gis'],
   }
   const visibleNavigation = navigation.filter(item => allowedPages[user.role].includes(item.id))
@@ -708,6 +710,28 @@ function RegistryFlagsCard({ user }: { user: AuthUser }) {
   </div>
 }
 
+function AnalyticsPage() {
+  const [status, setStatus] = useState<GrafanaStatus | null>(null)
+  const [error, setError] = useState('')
+  const load = () => {
+    setError('')
+    setStatus(null)
+    api.grafanaStatus().then(setStatus).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Could not reach the Grafana connector'))
+  }
+  useEffect(load, [])
+  if (error) return <div className="card empty"><AlertTriangle size={28}/><h3>Could not load Grafana</h3><p>{error}</p><button className="btn secondary" onClick={load}>Retry</button></div>
+  if (!status) return <div className="card empty"><RefreshCcw className="spin" size={24}/><p>Connecting to Grafana…</p></div>
+  if (!status.configured) return <div className="card empty analytics-setup">
+    <BarChart3 size={28}/><h3>Grafana is not connected yet</h3><p>{status.message}</p>
+    <div className="analytics-vars"><span>Set this once a public dashboard has been published from your Grafana Cloud instance:</span>
+      <div><code>GRAFANA_DASHBOARD_URL</code></div>
+    </div>
+  </div>
+  return <div className="card analytics-embed">
+    <iframe className="grafana-frame" src={status.dashboard_url} title="Grafana analytics dashboard" referrerPolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-popups"/>
+  </div>
+}
+
 function SettingsPage({ user }: { user: AuthUser }) {
   const [users, setUsers] = useState<AdminUser[]>([])
   const [integrations, setIntegrations] = useState<IntegrationStatus[]>([])
@@ -752,7 +776,7 @@ function SettingsPage({ user }: { user: AuthUser }) {
       {showForm && <form className="new-user-form" onSubmit={create}><label>Full name<input required value={form.display_name} onChange={event => setForm({...form, display_name:event.target.value})}/></label><label>Official email<input required type="email" value={form.username} onChange={event => setForm({...form, username:event.target.value})}/></label><label>Temporary password<input required minLength={10} type="password" value={form.password} onChange={event => setForm({...form, password:event.target.value})}/></label><label>Role<select value={form.role} onChange={event => setForm({...form, role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select></label><label>State{user.state ? <input value={user.state} disabled/> : <select value={form.state} onChange={event => setForm({...form, state:event.target.value})}>{form.role !== 'Administrator' && <option value="" disabled>Select a state…</option>}{form.role === 'Administrator' && <option value="">All states (national)</option>}{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select>}</label><button className="btn primary">Create user</button></form>}
       <div className="user-list"><div className="user-list-head"><span>Official</span><span>Role</span><span>State</span><span>Status</span><span>Access</span></div>{users.map(target => <div className="user-row" key={target.id}><div><span className="avatar">{target.display_name.split(' ').map(word=>word[0]).join('').slice(0,2)}</span><p><b>{target.display_name}</b><small>{target.username}</small></p></div><select value={target.role} onChange={event => update(target,{role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select><span className="muted">{target.state || 'All states'}</span><span className={`status ${target.active ? 'status-verified' : 'status-rejected'}`}>{target.active ? 'Active' : 'Disabled'}</span><button className="btn secondary" onClick={() => update(target,{active:!target.active})}>{target.active ? 'Disable' : 'Enable'}</button></div>)}</div>
     </section>
-    <aside className="security-stack"><div className="card security-card"><LockKeyhole size={21}/><div><span>DOCUMENT STORAGE</span><strong>Encrypted managed storage</strong><small>Private objects with SHA-256 integrity validation</small></div></div><div className="card security-card"><History size={21}/><div><span>AUDIT CHAIN</span><strong>HMAC-SHA256</strong><small>Tamper-evident linked event history</small></div></div><div className="card security-card"><UsersRound size={21}/><div><span>ACCESS MODEL</span><strong>5 enforced roles</strong><small>PBKDF2 passwords, revocable sessions and API rate limits</small></div></div><RegistryFlagsCard user={user}/><div className="card integration-card"><div className="integration-head"><div><span>GOVERNMENT INTEGRATIONS</span><strong>Deployment readiness</strong></div><Database size={20}/></div>{integrations.map(integration => <div className="integration-row" key={integration.key}><span><b>{integration.key}</b><small>{integration.name}{integrationMessage[integration.key] ? ` · ${integrationMessage[integration.key]}` : ''}</small></span>{integration.configured && integration.key !== 'sso' ? <button className="btn secondary" onClick={() => testIntegration(integration)}>Test</button> : <i className={integration.configured ? 'configured' : ''}>{integration.configured ? 'Configured' : 'Needs endpoint'}</i>}</div>)}</div><div className="card learning-card"><Sparkles size={20}/><div><span>AI LEARNING LOOP</span><strong>Verified correction dataset</strong><small>Export officer corrections as JSONL for governed model evaluation and retraining.</small><button className="btn secondary full" onClick={() => api.exportCorrections()}>Export learning data</button></div></div></aside>
+    <aside className="security-stack"><div className="card security-card"><LockKeyhole size={21}/><div><span>DOCUMENT STORAGE</span><strong>Encrypted managed storage</strong><small>Private objects with SHA-256 integrity validation</small></div></div><div className="card security-card"><History size={21}/><div><span>AUDIT CHAIN</span><strong>HMAC-SHA256</strong><small>Tamper-evident linked event history</small></div></div><div className="card security-card"><UsersRound size={21}/><div><span>ACCESS MODEL</span><strong>5 enforced roles</strong><small>PBKDF2 passwords, revocable sessions and API rate limits</small></div></div><RegistryFlagsCard user={user}/><div className="card integration-card"><div className="integration-head"><div><span>GOVERNMENT INTEGRATIONS</span><strong>Deployment readiness</strong></div><Database size={20}/></div>{integrations.map(integration => <div className="integration-row" key={integration.key}><span><b>{integration.key}</b><small>{integration.name}{integrationMessage[integration.key] ? ` · ${integrationMessage[integration.key]}` : ''}</small></span>{integration.configured && integration.key !== 'sso' && integration.key !== 'Grafana' ? <button className="btn secondary" onClick={() => testIntegration(integration)}>Test</button> : <i className={integration.configured ? 'configured' : ''}>{integration.configured ? 'Configured' : 'Needs endpoint'}</i>}</div>)}</div><div className="card learning-card"><Sparkles size={20}/><div><span>AI LEARNING LOOP</span><strong>Verified correction dataset</strong><small>Export officer corrections as JSONL for governed model evaluation and retraining.</small><button className="btn secondary full" onClick={() => api.exportCorrections()}>Export learning data</button></div></div></aside>
   </div>
 }
 
@@ -878,7 +902,7 @@ function App() {
   return <div className="app-shell">
     <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} user={user} onLogout={logout} reviewCount={stats?.needs_review || 0}/>
     <div className="main-shell"><Header page={page} onMenu={() => setMobileOpen(true)} apiOnline={apiOnline} notifications={notifications} onNotificationsChanged={setNotifications}/><main className={page === 'verification' ? 'verify-page' : ''}><PageHeading page={page} setPage={setPage} user={user}/>
-      {page === 'overview' && <Overview docs={docs} setPage={setPage} stats={stats} onReview={openVerification}/>} {page === 'upload' && <UploadPage onAdded={addDocument} user={user}/>} {page === 'verification' && <VerificationPage document={verificationDocument} onVerified={verify} onRejected={reject} onBack={() => setPage('records')} apiOnline={apiOnline}/>} {page === 'records' && <RecordsPage docs={docs} onReview={openVerification} onOpen={setRecordDetailId}/>} {page === 'gis' && <GisPage onOpenRecord={setRecordDetailId} canEdit={['Administrator', 'Verification Officer'].includes(user.role)} records={docs}/>} {page === 'audit' && <AuditPage events={auditEvents} integrity={auditIntegrity} canExport={['Administrator', 'Auditor'].includes(user.role)}/>} {page === 'settings' && <SettingsPage user={user}/>}
+      {page === 'overview' && <Overview docs={docs} setPage={setPage} stats={stats} onReview={openVerification}/>} {page === 'upload' && <UploadPage onAdded={addDocument} user={user}/>} {page === 'verification' && <VerificationPage document={verificationDocument} onVerified={verify} onRejected={reject} onBack={() => setPage('records')} apiOnline={apiOnline}/>} {page === 'records' && <RecordsPage docs={docs} onReview={openVerification} onOpen={setRecordDetailId}/>} {page === 'gis' && <GisPage onOpenRecord={setRecordDetailId} canEdit={['Administrator', 'Verification Officer'].includes(user.role)} records={docs}/>} {page === 'analytics' && <AnalyticsPage/>} {page === 'audit' && <AuditPage events={auditEvents} integrity={auditIntegrity} canExport={['Administrator', 'Auditor'].includes(user.role)}/>} {page === 'settings' && <SettingsPage user={user}/>}
     </main></div>
     {detailDocument && <RecordDetails document={detailDocument} user={user} onClose={() => setRecordDetailId(null)} onReview={openVerification}/>} 
     {toast && <div className="toast"><CheckCircle2 size={18}/>{toast}</div>}
