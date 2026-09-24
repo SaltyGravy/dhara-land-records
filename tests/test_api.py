@@ -144,7 +144,7 @@ def test_batch_gis_notifications_and_exports():
         assert client.get("/api/audit/integrity", headers=admin).json()["valid"] is True
         integrations = client.get("/api/integrations", headers=admin)
         assert integrations.status_code == 200
-        assert {item["key"] for item in integrations.json()} == {"LRMS", "DILRMP", "GeoServer", "Registration", "Notifications", "PowerBI"}
+        assert {item["key"] for item in integrations.json()} == {"LRMS", "DILRMP", "GeoServer", "Registration", "Notifications"}
         assert client.get("/api/integrations", headers=viewer).status_code == 403
         canonical = client.get("/api/integration/records/LR-2026-04181", headers=viewer)
         assert canonical.status_code == 200
@@ -311,35 +311,6 @@ def test_integration_test_and_sync_against_a_real_mock_connector():
         os.environ.pop("LRMS_BASE_URL", None)
         server.should_exit = True
         thread.join(timeout=5)
-
-
-def test_powerbi_embed_info_reports_not_configured_and_is_role_gated():
-    with TestClient(app) as client:
-        admin = auth(client, "admin@dhara.gov.in")
-        # No POWERBI_* environment variables are set in the test environment, so this must
-        # report "not configured" rather than attempting a real Azure AD call and hanging or
-        # erroring on a network request the test suite never wants to make.
-        info = client.get("/api/integrations/powerbi/embed-info", headers=admin)
-        assert info.status_code == 200
-        body = info.json()
-        assert body["configured"] is False
-        assert "POWERBI_TENANT_ID" in body["message"]
-
-        # Same graceful-degradation contract holds even when every required variable but one
-        # is set - it must not attempt the exchange with an incomplete credential set.
-        os.environ["POWERBI_TENANT_ID"] = "tenant"
-        os.environ["POWERBI_CLIENT_ID"] = "client"
-        try:
-            partial = client.get("/api/integrations/powerbi/embed-info", headers=admin)
-            assert partial.json()["configured"] is False
-        finally:
-            os.environ.pop("POWERBI_TENANT_ID", None)
-            os.environ.pop("POWERBI_CLIENT_ID", None)
-
-        # Only audit-capable roles (Administrator, Verification Officer, Auditor) may reach
-        # this endpoint at all - a Data Operator or Viewer gets a plain 403, same as /api/audit.
-        operator = auth(client, "operator@dhara.gov.in")
-        assert client.get("/api/integrations/powerbi/embed-info", headers=operator).status_code == 403
 
 
 def test_login_and_me_report_the_users_own_state():

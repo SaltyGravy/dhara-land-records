@@ -99,11 +99,6 @@ export interface IntegrationStatus {
   configuration_variable: string
 }
 
-export type PowerBiEmbedInfo =
-  | { configured: false; message: string }
-  | { configured: true; error: true; message: string }
-  | { configured: true; embed_url: string; report_id: string; access_token: string; expiration: string }
-
 export interface CitizenRequestStatus {
   id?: string
   request_id?: string
@@ -221,7 +216,6 @@ export const api = {
   integrations: () => request<IntegrationStatus[]>('/api/integrations'),
   learningMetrics: () => request<LearningMetrics>('/api/model/metrics'),
   testIntegration: (key: string) => request<{ key: string; connected: boolean; status: number; message: string }>(`/api/integrations/${key}/test`, { method: 'POST' }),
-  powerBiEmbedInfo: () => request<PowerBiEmbedInfo>('/api/integrations/powerbi/embed-info'),
   syncIntegration: (key: string, documentId: string) => request<{ key: string; record_id: string; synchronized: boolean; status: number; message: string }>(`/api/integrations/${key}/sync/${documentId}`, { method: 'POST' }),
   sourceBlobUrl: async (id: string) => {
     const headers = new Headers()

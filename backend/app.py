@@ -26,7 +26,6 @@ from .database import DATABASE_URL, Base, SessionLocal, engine, get_db
 from .models import AuditEvent, Document, ExtractedField, FieldCorrection, Notification, NotificationReceipt, Parcel, PlotRow, ProcessingJob, RecordRevision, RegistryFlag, User
 from .migrations import upgrade_schema
 from .ocr import FIELD_RULES, detect_language, extract_fields, extract_text
-from . import powerbi
 from .schemas import (
     AdminUserOut, ApprovalRequest, AuditOut, DocumentOut, ExtractionFailure, ExtractionSubmission, FieldOut, FieldUpdate, LoginRequest,
     NotificationOut, ParcelUpdate, PlotRowIn, PlotRowOut, RegistryFlagIn, RegistryFlagOut, RegistryFlagUpdate, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
@@ -866,27 +865,13 @@ def integration_status(_: User = Depends(require_roles("Administrator"))):
         ("Registration", "REGISTRATION_API_URL", "Registration and deed verification"),
         ("Notifications", "NOTIFICATION_GATEWAY_URL", "Government SMS and email gateway"),
     ]
-    statuses = [{
+    return [{
         "key": key,
         "name": name,
         "configured": bool(os.getenv(variable)),
         "base_url": os.getenv(variable, ""),
         "configuration_variable": variable,
     } for key, variable, name in integrations]
-    # Power BI needs five variables (an Azure AD app registration's credentials plus the
-    # workspace/report it's embedding), not one connector URL, so it doesn't fit the
-    # single-env-var shape above - reported the same way for the Settings page regardless.
-    statuses.append({
-        "key": "PowerBI", "name": "Power BI Embedded analytics",
-        "configured": powerbi.is_configured(), "base_url": "",
-        "configuration_variable": ", ".join(powerbi.ENV_VARS),
-    })
-    return statuses
-
-
-@app.get("/api/integrations/powerbi/embed-info")
-def powerbi_embed_info(_: User = Depends(require_roles(*AUDIT_ROLES))):
-    return powerbi.get_embed_info()
 
 
 @app.post("/api/integrations/{key}/test")
