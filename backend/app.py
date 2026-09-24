@@ -30,7 +30,7 @@ from .schemas import (
     AdminUserOut, ApprovalRequest, AuditOut, DocumentOut, ExtractionFailure, ExtractionSubmission, FieldOut, FieldUpdate, LoginRequest,
     NotificationOut, ParcelUpdate, PlotRowIn, PlotRowOut, RegistryFlagIn, RegistryFlagOut, RegistryFlagUpdate, StatsOut, TokenOut, UserCreate, UserOut, UserUpdate,
 )
-from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from .security import create_access_token, effective_state, get_current_user, hash_password, require_roles, verify_password
 from .storage import BLOB_ENABLED, encrypt_and_store, malware_scan, materialize_decrypted, read_and_decrypt, validate_document
 from .validation import validate_record
 
@@ -88,15 +88,18 @@ def add_notification(db: Session, title: str, message: str, level: str = "info",
 # of these three helpers rather than re-implementing the check inline.
 
 def scope_documents(statement, user: User):
-    return statement.where(Document.state == user.state) if user.state else statement
+    state = effective_state(user)
+    return statement.where(Document.state == state) if state else statement
 
 
 def scope_parcels(statement, user: User):
-    return statement.where(Parcel.state == user.state) if user.state else statement
+    state = effective_state(user)
+    return statement.where(Parcel.state == state) if state else statement
 
 
 def scope_registry_flags(statement, user: User):
-    return statement.where(RegistryFlag.state == user.state) if user.state else statement
+    state = effective_state(user)
+    return statement.where(RegistryFlag.state == state) if state else statement
 
 
 def _call_external_json(base_url: str, path: str, payload: dict | None, token: str = "", method: str = "POST") -> tuple[int, dict | None, str]:
@@ -141,17 +144,17 @@ def seed_system_data() -> None:
 
         if not db.scalar(select(func.count()).select_from(Document)):
             samples = [
-                ("LR-2026-04182", "Uttar Pradesh", "Jamabandi Register · 1998", "Lucknow", "Hindi", 97.4, "Verified", "142/2A", "Mahesh Kumar Yadav", "Rampur"),
-                ("LR-2026-04181", "Uttar Pradesh", "Khasra Record · 2004", "Varanasi", "Hindi", 82.1, "Needs review", "88/1", "Sunita Devi", "Baragaon"),
-                ("LR-2026-04180", "Uttar Pradesh", "Mutation Register · 1987", "Prayagraj", "Urdu", 74.8, "Needs review", "207/4B", "Iqbal Ahmad Khan", "Sadar"),
-                ("LR-2026-04179", "Uttar Pradesh", "Khatauni · 2010", "Lucknow", "Hindi", 93.6, "Verified", "51/3", "Kamla Prasad", "Malihabad"),
-                ("LR-2026-04177", "Uttar Pradesh", "Registry Deed · 1995", "Prayagraj", "English", 96.2, "Verified", "319/2", "Anil Singh Chauhan", "Karchhana"),
-                ("LR-2026-05201", "Maharashtra", "Satbara (7/12) Extract · 2011", "Pune", "Marathi", 91.5, "Verified", "64/2", "Sunil Bhosale", "Hadapsar"),
-                ("LR-2026-05202", "Maharashtra", "Mutation Register · 2006", "Mumbai Suburban", "Marathi", 79.3, "Needs review", "12/A", "Neha Patil", "Andheri"),
+                ("LR-2026-04182", "Uttar Pradesh", "Rural", "Jamabandi Register · 1998", "Lucknow", "Hindi", 97.4, "Verified", "142/2A", "Mahesh Kumar Yadav", "Rampur"),
+                ("LR-2026-04181", "Uttar Pradesh", "Rural", "Khasra Record · 2004", "Varanasi", "Hindi", 82.1, "Needs review", "88/1", "Sunita Devi", "Baragaon"),
+                ("LR-2026-04180", "Uttar Pradesh", "Rural", "Mutation Register · 1987", "Prayagraj", "Urdu", 74.8, "Needs review", "207/4B", "Iqbal Ahmad Khan", "Sadar"),
+                ("LR-2026-04179", "Uttar Pradesh", "Rural", "Khatauni · 2010", "Lucknow", "Hindi", 93.6, "Verified", "51/3", "Kamla Prasad", "Malihabad"),
+                ("LR-2026-04177", "Uttar Pradesh", "Urban", "Registry Deed · 1995", "Prayagraj", "English", 96.2, "Verified", "319/2", "Anil Singh Chauhan", "Karchhana"),
+                ("LR-2026-05201", "Maharashtra", "Rural", "Satbara (7/12) Extract · 2011", "Pune", "Marathi", 91.5, "Verified", "64/2", "Sunil Bhosale", "Hadapsar"),
+                ("LR-2026-05202", "Maharashtra", "Urban", "Mutation Register · 2006", "Mumbai Suburban", "Marathi", 79.3, "Needs review", "12/A", "Neha Patil", "Andheri"),
             ]
-            for record_id, state, doc_type, district, language, confidence, status, survey, owner, village in samples:
+            for record_id, state, category, doc_type, district, language, confidence, status, survey, owner, village in samples:
                 document = Document(
-                    id=record_id, filename=f"{record_id}.pdf", mime_type="application/pdf", state=state,
+                    id=record_id, filename=f"{record_id}.pdf", mime_type="application/pdf", state=state, category=category,
                     district=district, doc_type=doc_type, language=language, status=status, confidence=confidence,
                     ocr_engine="Imported legacy record", validation_issues="[]",
                 )
@@ -279,6 +282,7 @@ def serialize_document(document: Document) -> dict:
         "filename": document.filename,
         "location": f"{village}, {document.district}" if village else document.district,
         "district": document.district,
+        "category": document.category,
         "survey": field_value(document, "Khasra number", "—"),
         "type": document.doc_type.split(" · ")[0],
         "language": document.language,
@@ -300,7 +304,7 @@ def get_document_or_404(db: Session, document_id: str, user: User | None = None)
     document = db.scalar(select(Document).options(selectinload(Document.fields)).where(Document.id == document_id))
     # A state-scoped user gets the same 404 for "exists in another state" as for "doesn't
     # exist" - not a 403 - so a UP reviewer can't even confirm a Maharashtra record ID is real.
-    if not document or (user and user.state and document.state != user.state):
+    if not document or (user and effective_state(user) and document.state != effective_state(user)):
         raise HTTPException(status_code=404, detail="Record not found")
     return document
 
@@ -457,14 +461,21 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.username == credentials.username.casefold().strip()))
     if not user or not user.active or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
-    add_audit(db, "login", user.display_name, "signed in to Dhara")
+    portal_state = credentials.portal_state.strip() if credentials.portal_state else None
+    # Not a mapped column - see security.get_current_user/effective_state. Set here too so the
+    # very first response (before any token round-trip) already reflects it.
+    user.session_state = portal_state
+    add_audit(db, "login", user.display_name, "signed in to Dhara" + (f" via the {portal_state} portal" if portal_state else ""))
     db.commit()
-    return TokenOut(access_token=create_access_token(user), user=UserOut(username=user.username, display_name=user.display_name, role=user.role, state=user.state))
+    return TokenOut(
+        access_token=create_access_token(user, portal_state=portal_state),
+        user=UserOut(username=user.username, display_name=user.display_name, role=user.role, state=effective_state(user)),
+    )
 
 
 @app.get("/api/auth/me", response_model=UserOut)
 def current_user(user: User = Depends(get_current_user)):
-    return UserOut(username=user.username, display_name=user.display_name, role=user.role, state=user.state)
+    return UserOut(username=user.username, display_name=user.display_name, role=user.role, state=effective_state(user))
 
 
 @app.get("/api/users", response_model=list[AdminUserOut])
@@ -472,8 +483,8 @@ def list_users(db: Session = Depends(get_db), administrator: User = Depends(requ
     # A state-scoped administrator (e.g. a "Uttar Pradesh admin") manages only that state's
     # staff; a national administrator (state is None) manages everyone, across every state.
     statement = select(User).order_by(User.display_name)
-    if administrator.state:
-        statement = statement.where(User.state == administrator.state)
+    if effective_state(administrator):
+        statement = statement.where(User.state == effective_state(administrator))
     return list(db.scalars(statement))
 
 
@@ -482,8 +493,8 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), administrato
     roles = set(READ_ROLES)
     if payload.role not in roles:
         raise HTTPException(status_code=422, detail="Unknown role")
-    state = administrator.state or (payload.state.strip() if payload.state else None) or None
-    if administrator.state and payload.state and payload.state.strip() != administrator.state:
+    state = effective_state(administrator) or (payload.state.strip() if payload.state else None) or None
+    if effective_state(administrator) and payload.state and payload.state.strip() != effective_state(administrator):
         raise HTTPException(status_code=403, detail="You can only create users within your own state")
     username = payload.username.casefold().strip()
     if db.scalar(select(User).where(User.username == username)):
@@ -500,12 +511,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), administrato
 @app.patch("/api/users/{user_id}", response_model=AdminUserOut)
 def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db), administrator: User = Depends(require_roles("Administrator"))):
     user = db.get(User, user_id)
-    if not user or (administrator.state and user.state != administrator.state):
+    if not user or (effective_state(administrator) and effective_state(user) != effective_state(administrator)):
         raise HTTPException(status_code=404, detail="User not found")
     changes = payload.model_dump(exclude_unset=True)
     if changes.get("role") and changes["role"] not in set(READ_ROLES):
         raise HTTPException(status_code=422, detail="Unknown role")
-    if administrator.state and "state" in changes and changes["state"] != administrator.state:
+    if effective_state(administrator) and "state" in changes and changes["state"] != effective_state(administrator):
         raise HTTPException(status_code=403, detail="You can only assign users to your own state")
     if user.id == administrator.id and changes.get("active") is False:
         raise HTTPException(status_code=409, detail="You cannot deactivate your own account")
@@ -534,11 +545,12 @@ def get_document(document_id: str, db: Session = Depends(get_db), user: User = D
     return serialize_document(get_document_or_404(db, document_id, user))
 
 
-async def persist_upload(file: UploadFile, state: str, district: str, document_type: str, language: str, actor: User, db: Session) -> Document:
+async def persist_upload(file: UploadFile, state: str, district: str, category: str, document_type: str, language: str, actor: User, db: Session) -> Document:
     # A state-scoped operator's own state always wins over whatever the client sent - the
     # upload form locks/hides this field client-side for such users, but the server is the
     # actual boundary (a tampered request must not be able to write into another state).
-    state = actor.state or state
+    state = effective_state(actor) or state
+    category = category if category in ("Urban", "Rural") else "Rural"
     original_name = re.sub(r"[\x00-\x1f\x7f]+", "_", Path(file.filename or "upload").name).strip()[:255] or "upload"
     extension = Path(original_name).suffix.lower()
     mime_type = file.content_type or "application/octet-stream"
@@ -560,7 +572,7 @@ async def persist_upload(file: UploadFile, state: str, district: str, document_t
     checksum = encrypt_and_store(UPLOAD_DIR / storage_name, content)
     document = Document(
         id=record_id, filename=original_name, storage_name=storage_name, mime_type=mime_type, file_size=len(content),
-        state=state, district=district, doc_type=document_type, language=language, status="Processing", confidence=0,
+        state=state, district=district, category=category, doc_type=document_type, language=language, status="Processing", confidence=0,
         ocr_engine="Queued", checksum_sha256=checksum, validation_issues="[]",
     )
     db.add(document)
@@ -573,16 +585,16 @@ async def persist_upload(file: UploadFile, state: str, district: str, document_t
 
 @app.post("/api/documents", response_model=DocumentOut, status_code=201)
 async def upload_document(
-    file: UploadFile = File(...), state: str = Form("Uttar Pradesh"), district: str = Form("Unassigned"),
+    file: UploadFile = File(...), state: str = Form("Uttar Pradesh"), district: str = Form("Unassigned"), category: str = Form("Rural"),
     document_type: str = Form("Land record"), language: str = Form("Auto-detect"),
     db: Session = Depends(get_db), user: User = Depends(require_roles(*UPLOAD_ROLES)),
 ):
-    return serialize_document(await persist_upload(file, state, district, document_type, language, user, db))
+    return serialize_document(await persist_upload(file, state, district, category, document_type, language, user, db))
 
 
 @app.post("/api/documents/batch", response_model=list[DocumentOut], status_code=201)
 async def upload_batch(
-    files: list[UploadFile] = File(...), state: str = Form("Uttar Pradesh"), district: str = Form("Unassigned"),
+    files: list[UploadFile] = File(...), state: str = Form("Uttar Pradesh"), district: str = Form("Unassigned"), category: str = Form("Rural"),
     document_type: str = Form("Land record"), language: str = Form("Auto-detect"),
     db: Session = Depends(get_db), user: User = Depends(require_roles(*UPLOAD_ROLES)),
 ):
@@ -590,7 +602,7 @@ async def upload_batch(
         raise HTTPException(status_code=413, detail=f"A batch may contain at most {MAX_BATCH_FILES} files")
     records = []
     for file in files:
-        records.append(serialize_document(await persist_upload(file, state, district, document_type, language, user, db)))
+        records.append(serialize_document(await persist_upload(file, state, district, category, document_type, language, user, db)))
     return records
 
 
@@ -673,7 +685,7 @@ def submit_browser_extraction(
     for offset, plot in enumerate(plot_rows[1:], start=2):
         sibling = Document(
             id=generate_document_id(db), filename=document.filename, storage_name=document.storage_name,
-            mime_type=document.mime_type, file_size=document.file_size, state=document.state,
+            mime_type=document.mime_type, file_size=document.file_size, state=document.state, category=document.category,
             district=document.district, doc_type=document.doc_type, status="Processing", confidence=0,
             checksum_sha256=document.checksum_sha256, validation_issues="[]", batch_id=document.id, version=0,
         )
@@ -823,10 +835,10 @@ def list_audit(limit: int = 100, document_id: str | None = None, db: Session = D
     statement = select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(min(max(limit, 1), 500))
     if document_id:
         statement = statement.where(AuditEvent.document_id == document_id)
-    if user.state:
+    if effective_state(user):
         # System-level events (no document_id, e.g. logins) stay visible; document-linked
         # events are scoped to documents in this user's own state.
-        in_state_ids = select(Document.id).where(Document.state == user.state)
+        in_state_ids = select(Document.id).where(Document.state == effective_state(user))
         statement = statement.where((AuditEvent.document_id.is_(None)) | (AuditEvent.document_id.in_(in_state_ids)))
     return list(db.scalars(statement))
 
@@ -904,7 +916,7 @@ def model_metrics(db: Session = Depends(get_db), user: User = Depends(require_ro
         for row in docs
     ]
     # FieldCorrection has no state column of its own - scope through the document it belongs to.
-    state_filter = FieldCorrection.document_id.in_(select(Document.id).where(Document.state == user.state)) if user.state else True
+    state_filter = FieldCorrection.document_id.in_(select(Document.id).where(Document.state == effective_state(user))) if effective_state(user) else True
     corrections_query = db.execute(
         select(FieldCorrection.field_label, func.count().label("corrections"))
         .where(state_filter)
@@ -1020,7 +1032,8 @@ async def import_parcels(request: Request, db: Session = Depends(get_db), user: 
             # A state-scoped importer's own state wins over whatever the file says, same as
             # a document upload - the file's own "state" property is only honored for a
             # national (unscoped) importer.
-            state=user.state or props.get("state", "Uttar Pradesh"),
+            state=effective_state(user) or props.get("state", "Uttar Pradesh"),
+            category=props.get("category") if props.get("category") in ("Urban", "Rural") else "Rural",
             village=props.get("village", "Baragaon"),
             tehsil=props.get("tehsil", "Pindra"),
             district=props.get("district", "Varanasi"),
@@ -1070,23 +1083,25 @@ def get_stats(db: Session = Depends(get_db), user: User = Depends(require_roles(
 
 
 def parcel_feature(parcel: Parcel) -> dict:
-    return {"type": "Feature", "id": parcel.id, "geometry": json.loads(parcel.geometry_geojson), "properties": {"id": parcel.id, "khasra": parcel.khasra_number, "owner": parcel.owner, "area": parcel.area_hectares, "classification": parcel.classification, "status": parcel.status, "village": parcel.village, "tehsil": parcel.tehsil, "district": parcel.district, "record_id": parcel.record_id}}
+    return {"type": "Feature", "id": parcel.id, "geometry": json.loads(parcel.geometry_geojson), "properties": {"id": parcel.id, "khasra": parcel.khasra_number, "owner": parcel.owner, "area": parcel.area_hectares, "classification": parcel.classification, "status": parcel.status, "category": parcel.category, "village": parcel.village, "tehsil": parcel.tehsil, "district": parcel.district, "record_id": parcel.record_id}}
 
 
 @app.get("/api/parcels")
-def list_parcels(district: str | None = None, village: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles(*READ_ROLES))):
+def list_parcels(district: str | None = None, village: str | None = None, category: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles(*READ_ROLES))):
     statement = scope_parcels(select(Parcel).order_by(Parcel.khasra_number), user)
     if district:
         statement = statement.where(Parcel.district == district)
     if village:
         statement = statement.where(Parcel.village == village)
+    if category:
+        statement = statement.where(Parcel.category == category)
     return {"type": "FeatureCollection", "features": [parcel_feature(parcel) for parcel in db.scalars(statement)]}
 
 
 @app.patch("/api/parcels/{parcel_id}")
 def update_parcel(parcel_id: int, update: ParcelUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles(*REVIEW_ROLES))):
     parcel = db.get(Parcel, parcel_id)
-    if not parcel or (user.state and parcel.state != user.state):
+    if not parcel or (effective_state(user) and parcel.state != effective_state(user)):
         raise HTTPException(status_code=404, detail="Parcel not found")
     record_id_changed = "record_id" in update.model_dump(exclude_unset=True)
     for key, value in update.model_dump(exclude_unset=True).items():
@@ -1097,7 +1112,7 @@ def update_parcel(parcel_id: int, update: ParcelUpdate, db: Session = Depends(ge
     # linked document so that cross-modal check actually surfaces.
     if record_id_changed and parcel.record_id:
         linked_document = db.scalar(select(Document).options(selectinload(Document.fields)).where(Document.id == parcel.record_id))
-        if linked_document and not (user.state and linked_document.state != user.state):
+        if linked_document and not (effective_state(user) and linked_document.state != effective_state(user)):
             linked_document.validation_issues = json.dumps(validate_record(db, linked_document))
     db.commit()
     db.refresh(parcel)
@@ -1137,8 +1152,8 @@ def export_records(db: Session = Depends(get_db), user: User = Depends(require_r
 @app.get("/api/export/audit.csv")
 def export_audit(db: Session = Depends(get_db), user: User = Depends(require_roles("Administrator", "Auditor"))):
     statement = select(AuditEvent).order_by(AuditEvent.created_at.desc())
-    if user.state:
-        in_state_ids = select(Document.id).where(Document.state == user.state)
+    if effective_state(user):
+        in_state_ids = select(Document.id).where(Document.state == effective_state(user))
         statement = statement.where((AuditEvent.document_id.is_(None)) | (AuditEvent.document_id.in_(in_state_ids)))
     events = list(db.scalars(statement))
     output = io.StringIO()
@@ -1152,8 +1167,8 @@ def export_audit(db: Session = Depends(get_db), user: User = Depends(require_rol
 @app.get("/api/export/corrections.jsonl")
 def export_corrections(db: Session = Depends(get_db), user: User = Depends(require_roles("Administrator"))):
     statement = select(FieldCorrection).order_by(FieldCorrection.created_at)
-    if user.state:
-        statement = statement.where(FieldCorrection.document_id.in_(select(Document.id).where(Document.state == user.state)))
+    if effective_state(user):
+        statement = statement.where(FieldCorrection.document_id.in_(select(Document.id).where(Document.state == effective_state(user))))
     corrections = db.scalars(statement)
     lines = [json.dumps({
         "record_id": correction.document_id,
@@ -1184,10 +1199,10 @@ def list_registry_flags(status: str | None = None, db: Session = Depends(get_db)
 
 @app.post("/api/registry-flags", response_model=RegistryFlagOut, status_code=201)
 def create_registry_flag(payload: RegistryFlagIn, db: Session = Depends(get_db), user: User = Depends(require_roles(*REVIEW_ROLES))):
-    state = user.state or (payload.state.strip() if payload.state else None)
+    state = effective_state(user) or (payload.state.strip() if payload.state else None)
     if not state:
         raise HTTPException(status_code=422, detail="A national user must specify which state this flag applies to")
-    if user.state and payload.state and payload.state.strip() != user.state:
+    if effective_state(user) and payload.state and payload.state.strip() != effective_state(user):
         raise HTTPException(status_code=403, detail="You can only flag records within your own state")
     flag = RegistryFlag(
         state=state, district=payload.district.strip(), khasra_number=payload.khasra_number.strip(),
@@ -1213,7 +1228,7 @@ def create_registry_flag(payload: RegistryFlagIn, db: Session = Depends(get_db),
 @app.patch("/api/registry-flags/{flag_id}", response_model=RegistryFlagOut)
 def update_registry_flag(flag_id: int, payload: RegistryFlagUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles(*REVIEW_ROLES))):
     flag = db.get(RegistryFlag, flag_id)
-    if not flag or (user.state and flag.state != user.state):
+    if not flag or (effective_state(user) and flag.state != effective_state(user)):
         raise HTTPException(status_code=404, detail="Registry flag not found")
     flag.status = payload.status.strip()
     add_audit(db, "flag", user.display_name, f"marked registry flag on khasra {flag.khasra_number} as {flag.status}", None, flag.reference)

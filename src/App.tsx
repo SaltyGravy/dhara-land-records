@@ -94,7 +94,7 @@ function LoginScreen({ onLogin, initialError = '', routeState, onSelectState }: 
     event.preventDefault()
     setLoading(true)
     setError('')
-    try { await onLogin(await api.login(username, password)) }
+    try { await onLogin(await api.login(username, password, routeState)) }
     catch (loginError) { setError(loginError instanceof Error ? loginError.message : 'Sign in failed') }
     finally { setLoading(false) }
   }
@@ -333,6 +333,7 @@ function UploadPage({ onAdded, user }: { onAdded: (d: LandDocument) => void; use
   // my Maharashtra district disappear" moment after the fact.
   const [stateName, setStateName] = useState(user.state || 'Uttar Pradesh')
   const [district, setDistrict] = useState(user.state && user.state !== 'Uttar Pradesh' ? districtsForState(user.state)[0] || '' : 'Varanasi')
+  const [category, setCategory] = useState<'Rural' | 'Urban'>('Rural')
   const [documentType, setDocumentType] = useState('Khasra / Khatauni')
   const [language, setLanguage] = useState('Auto-detect')
   const [completedCount, setCompletedCount] = useState(0)
@@ -346,7 +347,7 @@ function UploadPage({ onAdded, user }: { onAdded: (d: LandDocument) => void; use
     setError('')
     setProcessing(true)
     try {
-      const queued = await api.uploadBatch(files, { state: stateName, district, documentType, language })
+      const queued = await api.uploadBatch(files, { state: stateName, district, category, documentType, language })
       const { recognizeLandRecord } = await import('./ocr')
       const processed: LandDocument[] = []
       const failures: string[] = []
@@ -393,7 +394,7 @@ function UploadPage({ onAdded, user }: { onAdded: (d: LandDocument) => void; use
       </div>}
       <div className="section-divider" />
       <div className="section-title"><span className="number">2</span><div><h3>Record context</h3><p>Helps the AI apply the correct language and validation rules</p></div></div>
-      <div className="form-grid"><label>State{user.state ? <input value={stateName} disabled/> : <select value={stateName} onChange={e => { const nextState = e.target.value; setStateName(nextState); setDistrict(districtsForState(nextState)[0] || '') }}>{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select>}</label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}>{districtsForState(stateName).map(option => <option key={option}>{option}</option>)}</select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
+      <div className="form-grid"><label>State{user.state ? <input value={stateName} disabled/> : <select value={stateName} onChange={e => { const nextState = e.target.value; setStateName(nextState); setDistrict(districtsForState(nextState)[0] || '') }}>{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select>}</label><label>Category<select value={category} onChange={e => setCategory(e.target.value as 'Rural' | 'Urban')}><option>Rural</option><option>Urban</option></select></label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}>{districtsForState(stateName).map(option => <option key={option}>{option}</option>)}</select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
       {error && <div className="upload-error"><AlertTriangle size={16}/>{error}</div>}
       <div className="upload-footer"><span><LockKeyhole size={15}/>AES-256-GCM protected storage · SHA-256 integrity · Content validation</span><button className="btn primary" disabled={!files.length || processing} onClick={start}>{processing ? <><RefreshCcw className="spin" size={17}/>Processing {completedCount}/{files.length}…</> : <><Sparkles size={17}/>Process {files.length > 1 ? `${files.length} documents` : 'document'}</>}</button></div>
     </div>
@@ -570,6 +571,7 @@ function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string
   // of one flat text box - the options at each level come from the parcels we actually have
   // mapped, not a fixed administrative list, so a district with no imported parcels yet
   // just doesn't appear rather than showing an empty result set.
+  const [categoryFilter, setCategoryFilter] = useState('')
   const [districtFilter, setDistrictFilter] = useState('')
   const [tehsilFilter, setTehsilFilter] = useState('')
   const [villageFilter, setVillageFilter] = useState('')
@@ -581,17 +583,19 @@ function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string
   const importInput = useRef<HTMLInputElement>(null)
   const loadParcels = () => api.parcels().then(collection => { setParcels(collection.features); setSelectedId(current => current ?? collection.features[0]?.id ?? null) })
   useEffect(() => { loadParcels().catch(() => undefined) }, [])
-  const districts = useMemo(() => Array.from(new Set(parcels.map(parcel => parcel.properties.district))).sort(), [parcels])
-  const tehsils = useMemo(() => Array.from(new Set(parcels.filter(parcel => !districtFilter || parcel.properties.district === districtFilter).map(parcel => parcel.properties.tehsil))).sort(), [parcels, districtFilter])
-  const villages = useMemo(() => Array.from(new Set(parcels.filter(parcel => (!districtFilter || parcel.properties.district === districtFilter) && (!tehsilFilter || parcel.properties.tehsil === tehsilFilter)).map(parcel => parcel.properties.village))).sort(), [parcels, districtFilter, tehsilFilter])
+  const inCategory = (parcel: ParcelFeature) => !categoryFilter || parcel.properties.category === categoryFilter
+  const districts = useMemo(() => Array.from(new Set(parcels.filter(inCategory).map(parcel => parcel.properties.district))).sort(), [parcels, categoryFilter])
+  const tehsils = useMemo(() => Array.from(new Set(parcels.filter(parcel => inCategory(parcel) && (!districtFilter || parcel.properties.district === districtFilter)).map(parcel => parcel.properties.tehsil))).sort(), [parcels, categoryFilter, districtFilter])
+  const villages = useMemo(() => Array.from(new Set(parcels.filter(parcel => inCategory(parcel) && (!districtFilter || parcel.properties.district === districtFilter) && (!tehsilFilter || parcel.properties.tehsil === tehsilFilter)).map(parcel => parcel.properties.village))).sort(), [parcels, categoryFilter, districtFilter, tehsilFilter])
   const located = parcels.filter(parcel =>
+    inCategory(parcel) &&
     (!districtFilter || parcel.properties.district === districtFilter) &&
     (!tehsilFilter || parcel.properties.tehsil === tehsilFilter) &&
     (!villageFilter || parcel.properties.village === villageFilter))
   const filtered = plotQuery ? located.filter(parcel => parcel.properties.khasra.toLowerCase().includes(plotQuery.toLowerCase())) : located
   useEffect(() => {
     if (filtered.length && !filtered.some(parcel => parcel.id === selectedId)) setSelectedId(filtered[0].id)
-  }, [districtFilter, tehsilFilter, villageFilter, plotQuery, parcels])
+  }, [categoryFilter, districtFilter, tehsilFilter, villageFilter, plotQuery, parcels])
   const selected = parcels.find(parcel => parcel.id === selectedId) || filtered[0]
   useEffect(() => {
     if (selected) setForm({ owner: selected.properties.owner, classification: selected.properties.classification, status: selected.properties.status, record_id: selected.properties.record_id || '' })
@@ -630,6 +634,7 @@ function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string
     if (importInput.current) importInput.current.value = ''
   }
   return <div className="gis-shell card"><div className="map-toolbar"><div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+      <label className="filter-select"><select className="select-button" value={categoryFilter} onChange={event => { setCategoryFilter(event.target.value); setDistrictFilter(''); setTehsilFilter(''); setVillageFilter('') }}><option value="">All categories</option><option>Rural</option><option>Urban</option></select></label>
       <label className="filter-select"><MapPin size={14}/><select className="select-button" value={districtFilter} onChange={event => { setDistrictFilter(event.target.value); setTehsilFilter(''); setVillageFilter('') }}><option value="">All districts</option>{districts.map(option => <option key={option}>{option}</option>)}</select></label>
       <label className="filter-select"><select className="select-button" value={tehsilFilter} onChange={event => { setTehsilFilter(event.target.value); setVillageFilter('') }}><option value="">All talukas</option>{tehsils.map(option => <option key={option}>{option}</option>)}</select></label>
       <label className="filter-select"><select className="select-button" value={villageFilter} onChange={event => setVillageFilter(event.target.value)}><option value="">All villages</option>{villages.map(option => <option key={option}>{option}</option>)}</select></label>

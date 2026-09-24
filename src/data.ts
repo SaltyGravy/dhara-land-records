@@ -14,6 +14,7 @@ export interface LandDocument {
   document: string
   location: string
   district: string
+  category?: 'Urban' | 'Rural'
   survey: string
   type: string
   language: string

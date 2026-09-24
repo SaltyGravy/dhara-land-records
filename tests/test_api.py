@@ -373,6 +373,67 @@ def test_state_scoping_isolates_documents_across_states():
         assert not any(row["name"] == "Kanpur" for row in mh_stats["district_progress"])
 
 
+def test_national_account_is_confined_to_the_state_portal_it_signed_in_through():
+    with TestClient(app) as client:
+        # A national account (state is None) signing in via a state's branded portal URL -
+        # e.g. /maharashtra - is confined to that state for the session, without needing a
+        # separate account. Its own account-level state (None) is untouched.
+        portal_login = client.post(
+            "/api/auth/login",
+            json={"username": "admin@dhara.gov.in", "password": "test-password", "portal_state": "Maharashtra"},
+        )
+        assert portal_login.status_code == 200
+        assert portal_login.json()["user"]["state"] == "Maharashtra"
+        portal_headers = {"Authorization": f"Bearer {portal_login.json()['access_token']}"}
+        assert client.get("/api/auth/me", headers=portal_headers).json()["state"] == "Maharashtra"
+
+        up_operator = auth(client, "operator@dhara.gov.in")
+        up_upload = client.post(
+            "/api/documents", files={"file": ("record.png", png_bytes(), "image/png")},
+            data={"state": "Uttar Pradesh", "district": "Kanpur", "document_type": "Khasra", "language": "English"},
+            headers=up_operator,
+        )
+        assert up_upload.status_code == 201
+        up_id = up_upload.json()["id"]
+
+        # Even though this is a national administrator account, signed in through the
+        # Maharashtra portal it cannot see (or reach) a Uttar Pradesh record this session.
+        portal_visible = {doc["id"] for doc in client.get("/api/documents", headers=portal_headers).json()}
+        assert up_id not in portal_visible
+        assert client.get(f"/api/documents/{up_id}", headers=portal_headers).status_code == 404
+
+        # A plain login with no portal_state keeps full national access, unaffected.
+        national_headers = auth(client, "admin@dhara.gov.in")
+        national_visible = {doc["id"] for doc in client.get("/api/documents", headers=national_headers).json()}
+        assert up_id in national_visible
+
+
+def test_category_field_round_trips_through_upload_and_filters_parcels():
+    with TestClient(app) as client:
+        up_operator = auth(client, "operator@dhara.gov.in")
+        urban_upload = client.post(
+            "/api/documents", files={"file": ("record.png", png_bytes(), "image/png")},
+            data={"state": "Uttar Pradesh", "district": "Kanpur", "category": "Urban", "document_type": "Khasra", "language": "English"},
+            headers=up_operator,
+        )
+        assert urban_upload.status_code == 201
+        assert urban_upload.json()["category"] == "Urban"
+
+        # An unrecognized category value falls back to Rural rather than being stored verbatim.
+        bogus_upload = client.post(
+            "/api/documents", files={"file": ("record.png", png_bytes(), "image/png")},
+            data={"state": "Uttar Pradesh", "district": "Kanpur", "category": "Commercial", "document_type": "Khasra", "language": "English"},
+            headers=up_operator,
+        )
+        assert bogus_upload.status_code == 201
+        assert bogus_upload.json()["category"] == "Rural"
+
+        rural_only = client.get("/api/parcels?category=Rural", headers=up_operator).json()
+        assert all(feature["properties"]["category"] == "Rural" for feature in rural_only["features"])
+        urban_only = client.get("/api/parcels?category=Urban", headers=up_operator).json()
+        assert all(feature["properties"]["category"] == "Urban" for feature in urban_only["features"])
+
+
 def test_state_scoped_administrator_manages_only_same_state_users():
     with TestClient(app) as client:
         national_admin = auth(client, "admin@dhara.gov.in")

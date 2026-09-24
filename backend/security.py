@@ -40,13 +40,15 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def create_access_token(user: User) -> str:
+def create_access_token(user: User, portal_state: str | None = None) -> str:
     now = datetime.now(timezone.utc)
-    return jwt.encode(
-        {"sub": user.username, "name": user.display_name, "role": user.role, "iat": now, "exp": now + timedelta(minutes=TOKEN_MINUTES)},
-        TOKEN_SECRET,
-        algorithm=TOKEN_ALGORITHM,
-    )
+    payload = {"sub": user.username, "name": user.display_name, "role": user.role, "iat": now, "exp": now + timedelta(minutes=TOKEN_MINUTES)}
+    # Only meaningful for a national (state is None) account: which state's portal URL they
+    # signed in through, carried in the token so it survives across requests without another
+    # DB column - a state-scoped account's own state always wins regardless of this.
+    if portal_state:
+        payload["portal_state"] = portal_state
+    return jwt.encode(payload, TOKEN_SECRET, algorithm=TOKEN_ALGORITHM)
 
 
 def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
@@ -60,7 +62,17 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
     user = db.scalar(select(User).where(User.username == username, User.active.is_(True)))
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is inactive or unavailable")
+    # Not a mapped column - never persisted, just carried for this request so effective_state()
+    # can see which portal a national account signed in through.
+    user.session_state = payload.get("portal_state")
     return user
+
+
+def effective_state(user: User) -> str | None:
+    """The state every scoping check should use: a state-scoped account's own state always
+    wins; a national account (state is None) is confined to whichever state's portal they
+    signed in through, if any - see create_access_token/get_current_user."""
+    return user.state or getattr(user, "session_state", None)
 
 
 def require_roles(*roles: str) -> Callable:

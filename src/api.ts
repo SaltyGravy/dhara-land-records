@@ -75,6 +75,7 @@ export interface ParcelFeature {
     area: number
     classification: string
     status: string
+    category: 'Urban' | 'Rural'
     village: string
     tehsil: string
     district: string
@@ -157,18 +158,21 @@ async function download(path: string, filename: string): Promise<void> {
   window.setTimeout(() => URL.revokeObjectURL(href), 5000)
 }
 
-function appendContext(form: FormData, context: { state: string; district: string; documentType: string; language: string }) {
+function appendContext(form: FormData, context: { state: string; district: string; category: string; documentType: string; language: string }) {
   form.append('state', context.state)
   form.append('district', context.district)
+  form.append('category', context.category)
   form.append('document_type', context.documentType)
   form.append('language', context.language)
 }
 
 export const api = {
   hasSession: () => Boolean(accessToken),
-  login: async (username: string, password: string) => {
+  // portal_state is the state the login screen was branded for (from the India-map picker) -
+  // only takes effect for a national account; a state-scoped account is unaffected either way.
+  login: async (username: string, password: string, portalState?: string | null) => {
     const response = await request<{ access_token: string; user: AuthUser }>('/api/auth/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, portal_state: portalState || undefined }),
     })
     accessToken = response.access_token
     localStorage.setItem(TOKEN_KEY, accessToken)
@@ -206,7 +210,7 @@ export const api = {
   notifications: () => request<NotificationItem[]>('/api/notifications'),
   markNotificationRead: (id: number) => request<NotificationItem>(`/api/notifications/${id}/read`, { method: 'POST' }),
   parcels: () => request<{ type: 'FeatureCollection'; features: ParcelFeature[] }>('/api/parcels'),
-  updateParcel: (id: number, payload: { owner?: string; classification?: string; status?: string; record_id?: string | null }) => request<ParcelFeature>(`/api/parcels/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateParcel: (id: number, payload: { owner?: string; classification?: string; status?: string; category?: string; record_id?: string | null }) => request<ParcelFeature>(`/api/parcels/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   importParcels: (collection: unknown) => request<{ imported: number }>('/api/parcels/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collection) }),
   versions: (id: string) => request<RecordVersion[]>(`/api/documents/${id}/versions`),
   integrations: () => request<IntegrationStatus[]>('/api/integrations'),
@@ -220,7 +224,7 @@ export const api = {
     if (!response.ok) throw new Error('Source document is unavailable')
     return URL.createObjectURL(await response.blob())
   },
-  uploadBatch: (files: File[], context: { state: string; district: string; documentType: string; language: string }) => {
+  uploadBatch: (files: File[], context: { state: string; district: string; category: string; documentType: string; language: string }) => {
     const form = new FormData()
     files.forEach(file => form.append('files', file))
     appendContext(form, context)

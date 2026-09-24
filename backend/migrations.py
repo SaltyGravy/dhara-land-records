@@ -14,6 +14,7 @@ DOCUMENT_COLUMNS = {
     "validation_issues": "TEXT NOT NULL DEFAULT '[]'",
     "version": "INTEGER NOT NULL DEFAULT 1",
     "batch_id": "VARCHAR(32) NULL",
+    "category": "VARCHAR(20) NOT NULL DEFAULT 'Rural'",
 }
 
 AUDIT_COLUMNS = {
@@ -31,6 +32,7 @@ PARCEL_COLUMNS = {
     # Every parcel seeded before this column existed is Varanasi/Uttar Pradesh - see
     # seed_system_data - so that's the correct backfill, not an arbitrary placeholder.
     "state": "VARCHAR(100) NOT NULL DEFAULT 'Uttar Pradesh'",
+    "category": "VARCHAR(20) NOT NULL DEFAULT 'Rural'",
 }
 
 

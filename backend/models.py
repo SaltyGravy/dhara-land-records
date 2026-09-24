@@ -20,6 +20,10 @@ class Document(Base):
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(100), default="Uttar Pradesh")
     district: Mapped[str] = mapped_column(String(100), default="Unassigned")
+    # "Rural" (village/khasra-khatauni records) or "Urban" (municipal property/plot records) -
+    # mirrors the split real state land-record portals (e.g. Maharashtra's Bhunaksha) make
+    # between their rural and urban record systems.
+    category: Mapped[str] = mapped_column(String(20), default="Rural")
     doc_type: Mapped[str] = mapped_column(String(100), default="Land record")
     language: Mapped[str] = mapped_column(String(60), default="Auto-detect")
     status: Mapped[str] = mapped_column(String(30), default="Processing")
@@ -129,6 +133,7 @@ class Parcel(Base):
     classification: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(30), default="Verified")
     state: Mapped[str] = mapped_column(String(100), default="Uttar Pradesh", index=True)
+    category: Mapped[str] = mapped_column(String(20), default="Rural", index=True)
     village: Mapped[str] = mapped_column(String(100), index=True)
     tehsil: Mapped[str] = mapped_column(String(100), index=True)
     district: Mapped[str] = mapped_column(String(100), index=True)

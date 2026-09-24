@@ -70,6 +70,7 @@ class DocumentOut(BaseModel):
     filename: str
     location: str
     district: str
+    category: str = "Rural"
     survey: str
     type: str
     language: str
@@ -116,6 +117,10 @@ class StatsOut(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(max_length=120)
     password: str = Field(max_length=200)
+    # Which state's portal the login screen was branded for when the user signed in - only
+    # takes effect for a national account (a state-scoped one is unaffected). See
+    # security.create_access_token/effective_state.
+    portal_state: str | None = Field(default=None, max_length=100)
 
 
 class UserOut(BaseModel):
@@ -156,6 +161,7 @@ class ParcelUpdate(BaseModel):
     owner: str | None = Field(default=None, max_length=200)
     classification: str | None = Field(default=None, max_length=120)
     status: str | None = Field(default=None, max_length=30)
+    category: str | None = Field(default=None, max_length=20)
     record_id: str | None = Field(default=None, max_length=32)
 
 
