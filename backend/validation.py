@@ -5,7 +5,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Document, Parcel
+from .models import Document, Parcel, RegistryFlag
 from .textmatch import similar
 
 
@@ -98,7 +98,9 @@ def _duplicate_and_conflict_checks(db: Session, document: Document, values: dict
     if not khasra:
         return
     candidates = db.scalars(
-        select(Document).options(selectinload(Document.fields)).where(Document.id != document.id, Document.district == document.district)
+        select(Document).options(selectinload(Document.fields)).where(
+            Document.id != document.id, Document.state == document.state, Document.district == document.district,
+        )
     ).unique()
     duplicate_of: str | None = None
     for candidate in candidates:
@@ -168,6 +170,30 @@ def _cross_modal_area_check(db: Session, document: Document, values: dict[str, s
         })
 
 
+def _registry_flag_check(db: Session, document: Document, values: dict[str, str], issues: list[dict]) -> None:
+    """Cross-check the extracted khasra against this state/district's locally maintained
+    registry of active disputes and bank mortgages (RegistryFlag) - a stand-in for the real
+    LRMS/registration systems this app has no live credentials for (see
+    app.canonical_record_payload and scripts/mock_lrms.py), maintained by reviewers via
+    /api/registry-flags instead. A match is an approval-blocking error: a record with an
+    active dispute or mortgage on file should not be verified until that's resolved."""
+    khasra = re.sub(r"\s+", "", values.get("Khasra number", "").casefold())
+    if not khasra:
+        return
+    flags = db.scalars(select(RegistryFlag).where(
+        RegistryFlag.state == document.state, RegistryFlag.district == document.district, RegistryFlag.status == "Active",
+    ))
+    for flag in flags:
+        flag_khasra = re.sub(r"\s+", "", flag.khasra_number.casefold())
+        if not similar(khasra, flag_khasra, KHASRA_SIMILARITY_RATIO):
+            continue
+        reference = f" (reference: {flag.reference})" if flag.reference else ""
+        issues.append({
+            "code": "registry_flag", "field": "Khasra number", "severity": "error",
+            "message": f"Khasra {values.get('Khasra number', '')} has an active {flag.flag_type.lower()} on file in the registry{reference} - resolve before approval.",
+        })
+
+
 def validate_record(db: Session, document: Document) -> list[dict]:
     values = _field_map(document)
     issues: list[dict] = []
@@ -184,4 +210,5 @@ def validate_record(db: Session, document: Document) -> list[dict]:
     _duplicate_and_conflict_checks(db, document, values, issues)
     _plot_row_checks(document, issues)
     _cross_modal_area_check(db, document, values, issues)
+    _registry_flag_check(db, document, values, issues)
     return issues

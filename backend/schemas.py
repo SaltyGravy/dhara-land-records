@@ -122,6 +122,7 @@ class UserOut(BaseModel):
     username: str
     display_name: str
     role: str
+    state: str | None = None
 
 
 class TokenOut(BaseModel):
@@ -141,12 +142,14 @@ class UserCreate(BaseModel):
     display_name: str = Field(max_length=120)
     password: str = Field(min_length=10, max_length=200)
     role: str = Field(max_length=50)
+    state: str | None = Field(default=None, max_length=100)
 
 
 class UserUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
     role: str | None = Field(default=None, max_length=50)
     active: bool | None = None
+    state: str | None = Field(default=None, max_length=100)
 
 
 class ParcelUpdate(BaseModel):
@@ -154,6 +157,35 @@ class ParcelUpdate(BaseModel):
     classification: str | None = Field(default=None, max_length=120)
     status: str | None = Field(default=None, max_length=30)
     record_id: str | None = Field(default=None, max_length=32)
+
+
+class RegistryFlagIn(BaseModel):
+    state: str | None = Field(default=None, max_length=100)
+    district: str = Field(max_length=100)
+    khasra_number: str = Field(max_length=80)
+    flag_type: str = Field(default="Dispute", max_length=30)
+    reference: str = Field(default="", max_length=160)
+    notes: str = Field(default="", max_length=2000)
+
+
+class RegistryFlagUpdate(BaseModel):
+    status: str = Field(max_length=20)
+
+
+class RegistryFlagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    state: str
+    district: str
+    khasra_number: str
+    flag_type: str
+    status: str
+    reference: str
+    notes: str
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class NotificationOut(BaseModel):

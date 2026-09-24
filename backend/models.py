@@ -99,6 +99,9 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(50), index=True)
+    # Null = national access (sees and manages every state). Set = confined to that one
+    # state's records and staff - see app.scope_documents/scope_parcels/require_state_access.
+    state: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -125,11 +128,33 @@ class Parcel(Base):
     area_hectares: Mapped[float] = mapped_column(Float)
     classification: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(30), default="Verified")
+    state: Mapped[str] = mapped_column(String(100), default="Uttar Pradesh", index=True)
     village: Mapped[str] = mapped_column(String(100), index=True)
     tehsil: Mapped[str] = mapped_column(String(100), index=True)
     district: Mapped[str] = mapped_column(String(100), index=True)
     record_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     geometry_geojson: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RegistryFlag(Base):
+    """A locally maintained stand-in for the government registration/LRMS records this app
+    doesn't yet have live credentials for (see canonical_record_payload / scripts/mock_lrms.py)
+    - an active dispute or bank mortgage recorded against a khasra number, checked by
+    validation._registry_flag_check before a record with a matching flag can be approved."""
+
+    __tablename__ = "registry_flags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    state: Mapped[str] = mapped_column(String(100), index=True)
+    district: Mapped[str] = mapped_column(String(100), index=True)
+    khasra_number: Mapped[str] = mapped_column(String(80), index=True)
+    flag_type: Mapped[str] = mapped_column(String(30), default="Dispute")
+    status: Mapped[str] = mapped_column(String(20), default="Active", index=True)
+    reference: Mapped[str] = mapped_column(String(160), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -19,7 +20,16 @@ os.environ["DEMO_PASSWORD"] = "test-password"
 os.environ["TOKEN_SECRET"] = "test-token-secret-with-sufficient-entropy"
 os.environ["FILE_ENCRYPTION_KEY"] = "test-file-key-with-sufficient-entropy"
 
-from backend.app import app
+from backend.app import app, rate_windows
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    # rate_windows is process-global (keyed by client host), so it otherwise accumulates
+    # across every test in the same pytest run - enough tests each logging in a few times
+    # trips the real 20/minute login limit well before any single test does anything wrong.
+    rate_windows.clear()
+    yield
 
 
 def auth(client: TestClient, username: str) -> dict[str, str]:
@@ -301,6 +311,136 @@ def test_integration_test_and_sync_against_a_real_mock_connector():
         os.environ.pop("LRMS_BASE_URL", None)
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_login_and_me_report_the_users_own_state():
+    with TestClient(app) as client:
+        # A user's state comes back on both auth endpoints, not just enforced silently on
+        # the backend - the frontend upload lock and sidebar label depend on this value.
+        login = client.post("/api/auth/login", json={"username": "mumbai.operator@dhara.gov.in", "password": "test-password"})
+        assert login.status_code == 200
+        assert login.json()["user"]["state"] == "Maharashtra"
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        assert client.get("/api/auth/me", headers=headers).json()["state"] == "Maharashtra"
+
+        national = client.post("/api/auth/login", json={"username": "admin@dhara.gov.in", "password": "test-password"})
+        assert national.json()["user"]["state"] is None
+
+
+def test_state_scoping_isolates_documents_across_states():
+    with TestClient(app) as client:
+        national_admin = auth(client, "admin@dhara.gov.in")
+        up_operator = auth(client, "operator@dhara.gov.in")
+        mh_operator = auth(client, "mumbai.operator@dhara.gov.in")
+
+        up_upload = client.post(
+            "/api/documents", files={"file": ("record.png", png_bytes(), "image/png")},
+            data={"state": "Uttar Pradesh", "district": "Kanpur", "document_type": "Khasra", "language": "English"},
+            headers=up_operator,
+        )
+        assert up_upload.status_code == 201
+        up_id = up_upload.json()["id"]
+
+        # A Maharashtra operator's upload is forced to Maharashtra server-side even if the
+        # client claims otherwise - the state field is a boundary, not a suggestion.
+        mh_upload = client.post(
+            "/api/documents", files={"file": ("record.png", png_bytes(), "image/png")},
+            data={"state": "Uttar Pradesh", "district": "Pune", "document_type": "Khasra", "language": "English"},
+            headers=mh_operator,
+        )
+        assert mh_upload.status_code == 201
+        mh_id = mh_upload.json()["id"]
+        assert client.get(f"/api/documents/{mh_id}", headers=mh_operator).json()["district"] == "Pune"
+
+        up_visible = {doc["id"] for doc in client.get("/api/documents", headers=up_operator).json()}
+        mh_visible = {doc["id"] for doc in client.get("/api/documents", headers=mh_operator).json()}
+        assert up_id in up_visible and mh_id not in up_visible
+        assert mh_id in mh_visible and up_id not in mh_visible
+
+        # A state-scoped user gets a 404, not a 403, for a record in another state - it
+        # shouldn't even confirm the record ID is real.
+        assert client.get(f"/api/documents/{mh_id}", headers=up_operator).status_code == 404
+        assert client.get(f"/api/documents/{up_id}", headers=mh_operator).status_code == 404
+
+        # A national administrator (state is None) sees every state.
+        national_visible = {doc["id"] for doc in client.get("/api/documents", headers=national_admin).json()}
+        assert {up_id, mh_id}.issubset(national_visible)
+
+        # Stats scope the same way.
+        up_stats = client.get("/api/stats", headers=up_operator).json()
+        mh_stats = client.get("/api/stats", headers=mh_operator).json()
+        assert not any(row["name"] == "Pune" for row in up_stats["district_progress"])
+        assert not any(row["name"] == "Kanpur" for row in mh_stats["district_progress"])
+
+
+def test_state_scoped_administrator_manages_only_same_state_users():
+    with TestClient(app) as client:
+        national_admin = auth(client, "admin@dhara.gov.in")
+        created = client.post(
+            "/api/users", headers=national_admin,
+            json={"username": "mh.admin@dhara.gov.in", "display_name": "Maharashtra Admin", "password": "test-password", "role": "Administrator", "state": "Maharashtra"},
+        )
+        assert created.status_code == 201
+        assert created.json()["state"] == "Maharashtra"
+
+        mh_admin = auth(client, "mh.admin@dhara.gov.in")
+        # Creating a user while state-scoped is forced into the acting admin's own state,
+        # regardless of what the request body claims.
+        rogue = client.post(
+            "/api/users", headers=mh_admin,
+            json={"username": "sneaky@dhara.gov.in", "display_name": "Sneaky", "password": "temporary-password", "role": "Viewer", "state": "Uttar Pradesh"},
+        )
+        assert rogue.status_code == 403
+
+        scoped_created = client.post(
+            "/api/users", headers=mh_admin,
+            json={"username": "mh.viewer@dhara.gov.in", "display_name": "Maharashtra Viewer", "password": "temporary-password", "role": "Viewer"},
+        )
+        assert scoped_created.status_code == 201
+        assert scoped_created.json()["state"] == "Maharashtra"
+
+        # The state-scoped admin's user list never includes Uttar Pradesh staff.
+        visible_usernames = {user["username"] for user in client.get("/api/users", headers=mh_admin).json()}
+        assert "mh.viewer@dhara.gov.in" in visible_usernames
+        assert "operator@dhara.gov.in" not in visible_usernames
+
+
+def test_registry_flag_blocks_approval_until_resolved():
+    with TestClient(app) as client:
+        reviewer = auth(client, "priya@dhara.gov.in")
+        admin = auth(client, "admin@dhara.gov.in")
+
+        # LR-2026-04181 (khasra 88/1, Varanasi) is seeded with an active mortgage flag on file.
+        blocked = client.post("/api/documents/LR-2026-04181/approve", json={"actor": "reviewer"}, headers=reviewer)
+        assert blocked.status_code == 409
+        blocking_codes = {issue["code"] for issue in blocked.json()["detail"]["issues"]}
+        assert "registry_flag" in blocking_codes
+
+        flags = client.get("/api/registry-flags?status=Active", headers=admin).json()
+        flag = next(item for item in flags if item["khasra_number"] == "88/1" and item["district"] == "Varanasi")
+        resolved = client.patch(f"/api/registry-flags/{flag['id']}", json={"status": "Resolved"}, headers=admin)
+        assert resolved.status_code == 200
+
+        document = client.get("/api/documents/LR-2026-04181", headers=reviewer).json()
+        assert "registry_flag" not in {issue["code"] for issue in document["validation_issues"]}
+
+
+def test_creating_a_registry_flag_immediately_flags_a_matching_document():
+    with TestClient(app) as client:
+        operator = auth(client, "operator@dhara.gov.in")
+        reviewer = auth(client, "priya@dhara.gov.in")
+        record_id = create_document(client, operator, district="Sitapur")
+        submit_extraction(client, record_id, operator, {"Landowner name": "Test Owner", "Khasra number": "200/1", "Village": "Test Village", "District": "Sitapur"})
+
+        created = client.post(
+            "/api/registry-flags", headers=reviewer,
+            json={"district": "Sitapur", "khasra_number": "200/1", "flag_type": "Dispute", "reference": "CASE/2026/41"},
+        )
+        assert created.status_code == 201
+        assert created.json()["state"] == "Uttar Pradesh"
+
+        document = client.get(f"/api/documents/{record_id}", headers=reviewer).json()
+        assert "registry_flag" in {issue["code"] for issue in document["validation_issues"]}
 
 
 def test_rejects_disguised_and_unsupported_uploads():

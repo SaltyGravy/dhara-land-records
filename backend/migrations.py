@@ -21,20 +21,32 @@ AUDIT_COLUMNS = {
     "event_hash": "VARCHAR(64) NOT NULL DEFAULT ''",
 }
 
+USER_COLUMNS = {
+    # Nullable, no default: an existing user must stay national (state IS NULL) rather than
+    # silently being fenced into whatever default we might pick for them.
+    "state": "VARCHAR(100) NULL",
+}
+
+PARCEL_COLUMNS = {
+    # Every parcel seeded before this column existed is Varanasi/Uttar Pradesh - see
+    # seed_system_data - so that's the correct backfill, not an arbitrary placeholder.
+    "state": "VARCHAR(100) NOT NULL DEFAULT 'Uttar Pradesh'",
+}
+
+
+def _add_missing_columns(engine: Engine, table: str, columns: dict[str, str]) -> None:
+    inspector = inspect(engine)
+    if table not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns(table)}
+    with engine.begin() as connection:
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
+
 
 def upgrade_schema(engine: Engine) -> None:
-    inspector = inspect(engine)
-    if "documents" not in inspector.get_table_names():
-        return
-    existing = {column["name"] for column in inspector.get_columns("documents")}
-    with engine.begin() as connection:
-        for name, definition in DOCUMENT_COLUMNS.items():
-            if name not in existing:
-                connection.execute(text(f"ALTER TABLE documents ADD COLUMN {name} {definition}"))
-    inspector = inspect(engine)
-    if "audit_events" in inspector.get_table_names():
-        existing_audit = {column["name"] for column in inspector.get_columns("audit_events")}
-        with engine.begin() as connection:
-            for name, definition in AUDIT_COLUMNS.items():
-                if name not in existing_audit:
-                    connection.execute(text(f"ALTER TABLE audit_events ADD COLUMN {name} {definition}"))
+    _add_missing_columns(engine, "documents", DOCUMENT_COLUMNS)
+    _add_missing_columns(engine, "audit_events", AUDIT_COLUMNS)
+    _add_missing_columns(engine, "users", USER_COLUMNS)
+    _add_missing_columns(engine, "parcels", PARCEL_COLUMNS)

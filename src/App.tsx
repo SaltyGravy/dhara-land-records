@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import { activity, districts, documents as initialDocuments, extractedFields, type DocumentStatus, type ExtractedField, type LandDocument, type PlotRow } from './data'
 import { districtsForState, indiaStateNames } from './india'
-import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion } from './api'
+import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion, type RegistryFlag } from './api'
 
 type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'audit' | 'settings'
 
@@ -112,7 +112,7 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobile
       </div>
       <div className="programme">
         <div className="emblem"><ShieldCheck size={20} /></div>
-        {!collapsed && <div><span>Uttar Pradesh</span><small>Land Records Mission</small></div>}
+        {!collapsed && <div><span>{user.state || 'All states (national)'}</span><small>Land Records Mission</small></div>}
       </div>
       <nav>
         {!collapsed && <p className="nav-title">WORKSPACE</p>}
@@ -275,15 +275,18 @@ function Overview({ docs, setPage, stats, onReview }: { docs: LandDocument[]; se
   </>
 }
 
-function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
+function UploadPage({ onAdded, user }: { onAdded: (d: LandDocument) => void; user: AuthUser }) {
   const fileInput = useRef<HTMLInputElement>(null)
   const [files, setFiles] = useState<File[]>([])
   const [drag, setDrag] = useState(false)
   const [processing, setProcessing] = useState(false)
   const [step, setStep] = useState(0)
   const [error, setError] = useState('')
-  const [stateName, setStateName] = useState('Uttar Pradesh')
-  const [district, setDistrict] = useState('Varanasi')
+  // A state-scoped operator's uploads always go to their own state - the server enforces
+  // this regardless of what's sent, but locking the field here avoids a confusing "why did
+  // my Maharashtra district disappear" moment after the fact.
+  const [stateName, setStateName] = useState(user.state || 'Uttar Pradesh')
+  const [district, setDistrict] = useState(user.state && user.state !== 'Uttar Pradesh' ? districtsForState(user.state)[0] || '' : 'Varanasi')
   const [documentType, setDocumentType] = useState('Khasra / Khatauni')
   const [language, setLanguage] = useState('Auto-detect')
   const [completedCount, setCompletedCount] = useState(0)
@@ -344,7 +347,7 @@ function UploadPage({ onAdded }: { onAdded: (d: LandDocument) => void }) {
       </div>}
       <div className="section-divider" />
       <div className="section-title"><span className="number">2</span><div><h3>Record context</h3><p>Helps the AI apply the correct language and validation rules</p></div></div>
-      <div className="form-grid"><label>State<select value={stateName} onChange={e => { const nextState = e.target.value; setStateName(nextState); setDistrict(districtsForState(nextState)[0] || '') }}>{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select></label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}>{districtsForState(stateName).map(option => <option key={option}>{option}</option>)}</select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
+      <div className="form-grid"><label>State{user.state ? <input value={stateName} disabled/> : <select value={stateName} onChange={e => { const nextState = e.target.value; setStateName(nextState); setDistrict(districtsForState(nextState)[0] || '') }}>{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select>}</label><label>District<select value={district} onChange={e => setDistrict(e.target.value)}>{districtsForState(stateName).map(option => <option key={option}>{option}</option>)}</select></label><label>Document type<select value={documentType} onChange={e => setDocumentType(e.target.value)}><option>Khasra / Khatauni</option><option>Jamabandi</option><option>Mutation register</option><option>Cadastral map</option></select></label><label>Primary language<select value={language} onChange={e => setLanguage(e.target.value)}>{['Auto-detect','Assamese','Bengali','English','Gujarati','Hindi','Kannada','Malayalam','Marathi','Odia','Punjabi','Sanskrit','Tamil','Telugu','Urdu'].map(option => <option key={option}>{option}</option>)}</select></label></div>
       {error && <div className="upload-error"><AlertTriangle size={16}/>{error}</div>}
       <div className="upload-footer"><span><LockKeyhole size={15}/>AES-256-GCM protected storage · SHA-256 integrity · Content validation</span><button className="btn primary" disabled={!files.length || processing} onClick={start}>{processing ? <><RefreshCcw className="spin" size={17}/>Processing {completedCount}/{files.length}…</> : <><Sparkles size={17}/>Process {files.length > 1 ? `${files.length} documents` : 'document'}</>}</button></div>
     </div>
@@ -590,14 +593,51 @@ function AuditPage({ events, integrity, canExport }: { events: AuditEvent[]; int
   </div>
 }
 
-function SettingsPage() {
+function RegistryFlagsCard({ user }: { user: AuthUser }) {
+  const [flags, setFlags] = useState<RegistryFlag[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [message, setMessage] = useState('')
+  const [form, setForm] = useState({ district: '', khasra_number: '', flag_type: 'Dispute', reference: '' })
+  const load = () => api.registryFlags('Active').then(setFlags).catch(() => undefined)
+  useEffect(() => { load() }, [])
+  const create = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setMessage('')
+    try {
+      await api.createRegistryFlag(form)
+      setForm({ district: '', khasra_number: '', flag_type: 'Dispute', reference: '' })
+      setShowForm(false)
+      await load()
+    } catch (requestError) { setMessage(requestError instanceof Error ? requestError.message : 'Could not record flag') }
+  }
+  const resolve = async (flag: RegistryFlag) => {
+    setMessage('')
+    try { await api.updateRegistryFlag(flag.id, 'Resolved'); await load() }
+    catch (requestError) { setMessage(requestError instanceof Error ? requestError.message : 'Could not resolve flag') }
+  }
+  return <div className="card integration-card">
+    <div className="integration-head"><div><span>REGISTRY CHECK</span><strong>Active disputes & mortgages{user.state ? ` · ${user.state}` : ''}</strong></div><button className="btn secondary" onClick={() => setShowForm(value => !value)}>{showForm ? 'Close' : 'Flag khasra'}</button></div>
+    <small>A matching khasra blocks approval until resolved here.</small>
+    {message && <div className="gis-message">{message}</div>}
+    {showForm && <form className="new-user-form" onSubmit={create}>
+      <label>District<input required value={form.district} onChange={event => setForm({...form, district: event.target.value})}/></label>
+      <label>Khasra number<input required value={form.khasra_number} onChange={event => setForm({...form, khasra_number: event.target.value})}/></label>
+      <label>Type<select value={form.flag_type} onChange={event => setForm({...form, flag_type: event.target.value})}><option>Dispute</option><option>Mortgage</option><option>Lien</option></select></label>
+      <label>Reference<input value={form.reference} onChange={event => setForm({...form, reference: event.target.value})}/></label>
+      <button className="btn primary">Record flag</button>
+    </form>}
+    {flags.length ? flags.map(flag => <div className="integration-row" key={flag.id}><span><b>{flag.khasra_number}</b><small>{flag.district} · {flag.flag_type}{flag.reference ? ` · ${flag.reference}` : ''}</small></span><button className="btn secondary" onClick={() => resolve(flag)}>Resolve</button></div>) : <p className="muted">No active flags on file.</p>}
+  </div>
+}
+
+function SettingsPage({ user }: { user: AuthUser }) {
   const [users, setUsers] = useState<AdminUser[]>([])
   const [integrations, setIntegrations] = useState<IntegrationStatus[]>([])
   const [showForm, setShowForm] = useState(false)
   const [error, setError] = useState('')
   const [integrationMessage, setIntegrationMessage] = useState<Record<string, string>>({})
   const [learning, setLearning] = useState<LearningMetrics | null>(null)
-  const [form, setForm] = useState({ display_name: '', username: '', password: '', role: 'Viewer' as AuthUser['role'] })
+  const [form, setForm] = useState({ display_name: '', username: '', password: '', role: 'Viewer' as AuthUser['role'], state: user.state || '' })
   const roles: AuthUser['role'][] = ['Administrator', 'Verification Officer', 'Data Operator', 'Auditor', 'Viewer']
   useEffect(() => {
     Promise.all([api.users(), api.integrations(), api.learningMetrics()]).then(([officials, services, metrics]) => { setUsers(officials); setIntegrations(services); setLearning(metrics) }).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Could not load administration data'))
@@ -606,9 +646,9 @@ function SettingsPage() {
     event.preventDefault()
     setError('')
     try {
-      const created = await api.createUser(form)
+      const created = await api.createUser({ ...form, state: form.role === 'Administrator' && !form.state ? null : form.state })
       setUsers(current => [...current, created].sort((a,b) => a.display_name.localeCompare(b.display_name)))
-      setForm({ display_name: '', username: '', password: '', role: 'Viewer' })
+      setForm({ display_name: '', username: '', password: '', role: 'Viewer', state: user.state || '' })
       setShowForm(false)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not create user') }
   }
@@ -629,12 +669,12 @@ function SettingsPage() {
     }
   }
   return <div className="settings-layout">
-    <section className="settings-main card"><div className="card-heading"><div><span>AUTHORIZED OFFICIALS</span><h3>User access</h3></div><button className="btn primary" onClick={() => setShowForm(value => !value)}><Plus size={16}/>{showForm ? 'Close form' : 'Add official'}</button></div>
+    <section className="settings-main card"><div className="card-heading"><div><span>AUTHORIZED OFFICIALS</span><h3>User access{user.state ? ` · ${user.state}` : ' · All states'}</h3></div><button className="btn primary" onClick={() => setShowForm(value => !value)}><Plus size={16}/>{showForm ? 'Close form' : 'Add official'}</button></div>
       {error && <div className="upload-error settings-error"><AlertTriangle size={15}/>{error}</div>}
-      {showForm && <form className="new-user-form" onSubmit={create}><label>Full name<input required value={form.display_name} onChange={event => setForm({...form, display_name:event.target.value})}/></label><label>Official email<input required type="email" value={form.username} onChange={event => setForm({...form, username:event.target.value})}/></label><label>Temporary password<input required minLength={10} type="password" value={form.password} onChange={event => setForm({...form, password:event.target.value})}/></label><label>Role<select value={form.role} onChange={event => setForm({...form, role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select></label><button className="btn primary">Create user</button></form>}
-      <div className="user-list"><div className="user-list-head"><span>Official</span><span>Role</span><span>Status</span><span>Access</span></div>{users.map(target => <div className="user-row" key={target.id}><div><span className="avatar">{target.display_name.split(' ').map(word=>word[0]).join('').slice(0,2)}</span><p><b>{target.display_name}</b><small>{target.username}</small></p></div><select value={target.role} onChange={event => update(target,{role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select><span className={`status ${target.active ? 'status-verified' : 'status-rejected'}`}>{target.active ? 'Active' : 'Disabled'}</span><button className="btn secondary" onClick={() => update(target,{active:!target.active})}>{target.active ? 'Disable' : 'Enable'}</button></div>)}</div>
+      {showForm && <form className="new-user-form" onSubmit={create}><label>Full name<input required value={form.display_name} onChange={event => setForm({...form, display_name:event.target.value})}/></label><label>Official email<input required type="email" value={form.username} onChange={event => setForm({...form, username:event.target.value})}/></label><label>Temporary password<input required minLength={10} type="password" value={form.password} onChange={event => setForm({...form, password:event.target.value})}/></label><label>Role<select value={form.role} onChange={event => setForm({...form, role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select></label><label>State{user.state ? <input value={user.state} disabled/> : <select value={form.state} onChange={event => setForm({...form, state:event.target.value})}>{form.role !== 'Administrator' && <option value="" disabled>Select a state…</option>}{form.role === 'Administrator' && <option value="">All states (national)</option>}{indiaStateNames.map(option => <option key={option}>{option}</option>)}</select>}</label><button className="btn primary">Create user</button></form>}
+      <div className="user-list"><div className="user-list-head"><span>Official</span><span>Role</span><span>State</span><span>Status</span><span>Access</span></div>{users.map(target => <div className="user-row" key={target.id}><div><span className="avatar">{target.display_name.split(' ').map(word=>word[0]).join('').slice(0,2)}</span><p><b>{target.display_name}</b><small>{target.username}</small></p></div><select value={target.role} onChange={event => update(target,{role:event.target.value as AuthUser['role']})}>{roles.map(role => <option key={role}>{role}</option>)}</select><span className="muted">{target.state || 'All states'}</span><span className={`status ${target.active ? 'status-verified' : 'status-rejected'}`}>{target.active ? 'Active' : 'Disabled'}</span><button className="btn secondary" onClick={() => update(target,{active:!target.active})}>{target.active ? 'Disable' : 'Enable'}</button></div>)}</div>
     </section>
-    <aside className="security-stack"><div className="card security-card"><LockKeyhole size={21}/><div><span>DOCUMENT STORAGE</span><strong>Encrypted managed storage</strong><small>Private objects with SHA-256 integrity validation</small></div></div><div className="card security-card"><History size={21}/><div><span>AUDIT CHAIN</span><strong>HMAC-SHA256</strong><small>Tamper-evident linked event history</small></div></div><div className="card security-card"><UsersRound size={21}/><div><span>ACCESS MODEL</span><strong>5 enforced roles</strong><small>PBKDF2 passwords, revocable sessions and API rate limits</small></div></div><div className="card integration-card"><div className="integration-head"><div><span>GOVERNMENT INTEGRATIONS</span><strong>Deployment readiness</strong></div><Database size={20}/></div>{integrations.map(integration => <div className="integration-row" key={integration.key}><span><b>{integration.key}</b><small>{integration.name}{integrationMessage[integration.key] ? ` · ${integrationMessage[integration.key]}` : ''}</small></span>{integration.configured && integration.key !== 'sso' ? <button className="btn secondary" onClick={() => testIntegration(integration)}>Test</button> : <i className={integration.configured ? 'configured' : ''}>{integration.configured ? 'Configured' : 'Needs endpoint'}</i>}</div>)}</div><div className="card learning-card"><Sparkles size={20}/><div><span>AI LEARNING LOOP</span><strong>Verified correction dataset</strong><small>Export officer corrections as JSONL for governed model evaluation and retraining.</small><button className="btn secondary full" onClick={() => api.exportCorrections()}>Export learning data</button></div></div></aside>
+    <aside className="security-stack"><div className="card security-card"><LockKeyhole size={21}/><div><span>DOCUMENT STORAGE</span><strong>Encrypted managed storage</strong><small>Private objects with SHA-256 integrity validation</small></div></div><div className="card security-card"><History size={21}/><div><span>AUDIT CHAIN</span><strong>HMAC-SHA256</strong><small>Tamper-evident linked event history</small></div></div><div className="card security-card"><UsersRound size={21}/><div><span>ACCESS MODEL</span><strong>5 enforced roles</strong><small>PBKDF2 passwords, revocable sessions and API rate limits</small></div></div><RegistryFlagsCard user={user}/><div className="card integration-card"><div className="integration-head"><div><span>GOVERNMENT INTEGRATIONS</span><strong>Deployment readiness</strong></div><Database size={20}/></div>{integrations.map(integration => <div className="integration-row" key={integration.key}><span><b>{integration.key}</b><small>{integration.name}{integrationMessage[integration.key] ? ` · ${integrationMessage[integration.key]}` : ''}</small></span>{integration.configured && integration.key !== 'sso' ? <button className="btn secondary" onClick={() => testIntegration(integration)}>Test</button> : <i className={integration.configured ? 'configured' : ''}>{integration.configured ? 'Configured' : 'Needs endpoint'}</i>}</div>)}</div><div className="card learning-card"><Sparkles size={20}/><div><span>AI LEARNING LOOP</span><strong>Verified correction dataset</strong><small>Export officer corrections as JSONL for governed model evaluation and retraining.</small><button className="btn secondary full" onClick={() => api.exportCorrections()}>Export learning data</button></div></div></aside>
   </div>
 }
 
@@ -739,7 +779,7 @@ function App() {
   return <div className="app-shell">
     <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} user={user} onLogout={logout} reviewCount={stats?.needs_review || 0}/>
     <div className="main-shell"><Header page={page} onMenu={() => setMobileOpen(true)} apiOnline={apiOnline} notifications={notifications} onNotificationsChanged={setNotifications}/><main className={page === 'verification' ? 'verify-page' : ''}><PageHeading page={page} setPage={setPage} user={user}/>
-      {page === 'overview' && <Overview docs={docs} setPage={setPage} stats={stats} onReview={openVerification}/>} {page === 'upload' && <UploadPage onAdded={addDocument}/>} {page === 'verification' && <VerificationPage document={verificationDocument} onVerified={verify} onRejected={reject} onBack={() => setPage('records')} apiOnline={apiOnline}/>} {page === 'records' && <RecordsPage docs={docs} onReview={openVerification} onOpen={setRecordDetailId}/>} {page === 'gis' && <GisPage onOpenRecord={setRecordDetailId} canEdit={['Administrator', 'Verification Officer'].includes(user.role)} records={docs}/>} {page === 'audit' && <AuditPage events={auditEvents} integrity={auditIntegrity} canExport={['Administrator', 'Auditor'].includes(user.role)}/>} {page === 'settings' && <SettingsPage/>}
+      {page === 'overview' && <Overview docs={docs} setPage={setPage} stats={stats} onReview={openVerification}/>} {page === 'upload' && <UploadPage onAdded={addDocument} user={user}/>} {page === 'verification' && <VerificationPage document={verificationDocument} onVerified={verify} onRejected={reject} onBack={() => setPage('records')} apiOnline={apiOnline}/>} {page === 'records' && <RecordsPage docs={docs} onReview={openVerification} onOpen={setRecordDetailId}/>} {page === 'gis' && <GisPage onOpenRecord={setRecordDetailId} canEdit={['Administrator', 'Verification Officer'].includes(user.role)} records={docs}/>} {page === 'audit' && <AuditPage events={auditEvents} integrity={auditIntegrity} canExport={['Administrator', 'Auditor'].includes(user.role)}/>} {page === 'settings' && <SettingsPage user={user}/>}
     </main></div>
     {detailDocument && <RecordDetails document={detailDocument} user={user} onClose={() => setRecordDetailId(null)} onReview={openVerification}/>} 
     {toast && <div className="toast"><CheckCircle2 size={18}/>{toast}</div>}

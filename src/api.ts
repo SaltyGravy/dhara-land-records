@@ -31,12 +31,28 @@ export interface AuthUser {
   username: string
   display_name: string
   role: 'Administrator' | 'Verification Officer' | 'Data Operator' | 'Auditor' | 'Viewer'
+  // null = national access (every state); set = confined to that one state's records.
+  state: string | null
 }
 
 export interface AdminUser extends AuthUser {
   id: number
   active: boolean
   created_at: string
+}
+
+export interface RegistryFlag {
+  id: number
+  state: string
+  district: string
+  khasra_number: string
+  flag_type: string
+  status: string
+  reference: string
+  notes: string
+  created_by: string
+  created_at: string
+  updated_at: string
 }
 
 export interface NotificationItem {
@@ -179,8 +195,8 @@ export const api = {
   },
   me: () => request<AuthUser>('/api/auth/me'),
   users: () => request<AdminUser[]>('/api/users'),
-  createUser: (payload: { username: string; display_name: string; password: string; role: AuthUser['role'] }) => request<AdminUser>('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
-  updateUser: (id: number, payload: { role?: AuthUser['role']; active?: boolean }) => request<AdminUser>(`/api/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  createUser: (payload: { username: string; display_name: string; password: string; role: AuthUser['role']; state?: string | null }) => request<AdminUser>('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateUser: (id: number, payload: { role?: AuthUser['role']; active?: boolean; state?: string | null }) => request<AdminUser>(`/api/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   health: () => request<{ status: string }>('/api/health'),
   documents: () => request<LandDocument[]>('/api/documents'),
   document: (id: string) => request<LandDocument>(`/api/documents/${id}`),
@@ -233,4 +249,7 @@ export const api = {
   exportAudit: () => download('/api/export/audit.csv', 'dhara-audit.csv'),
   exportParcels: () => download('/api/export/parcels.geojson', 'dhara-parcels.geojson'),
   exportCorrections: () => download('/api/export/corrections.jsonl', 'dhara-corrections.jsonl'),
+  registryFlags: (status?: string) => request<RegistryFlag[]>(`/api/registry-flags${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  createRegistryFlag: (payload: { district: string; khasra_number: string; flag_type: string; reference: string; notes?: string }) => request<RegistryFlag>('/api/registry-flags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateRegistryFlag: (id: number, status: string) => request<RegistryFlag>(`/api/registry-flags/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }),
 }
