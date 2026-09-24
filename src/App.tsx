@@ -9,7 +9,33 @@ import {
 } from 'lucide-react'
 import { activity, districts, documents as initialDocuments, extractedFields, type DocumentStatus, type ExtractedField, type LandDocument, type PlotRow } from './data'
 import { districtsForState, indiaStateNames } from './india'
+import { indiaMapRegions, INDIA_MAP_VIEWBOX } from './indiaMapPaths'
 import { api, type AdminUser, type ApiStats, type AuditEvent, type AuditIntegrity, type AuthUser, type IntegrationStatus, type LearningMetrics, type NotificationItem, type ParcelFeature, type RecordVersion, type RegistryFlag } from './api'
+
+// States/UTs the source map geometry predates (2014 Telangana split, 2019 Ladakh split) or
+// never separated (Lakshadweep) - offered as plain buttons alongside the map instead of a
+// fabricated boundary shape. See src/indiaMapPaths.ts for the map's provenance/license.
+const STATES_WITHOUT_MAP_SHAPE = indiaStateNames.filter(name => !indiaMapRegions.some(region => region.name === name))
+
+function slugifyState(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+function stateFromSlug(slug: string): string | null {
+  return indiaStateNames.find(name => slugifyState(name) === slug) || null
+}
+
+function IndiaMap({ selected, onSelect }: { selected: string | null; onSelect: (name: string) => void }) {
+  return <svg className="india-map" viewBox={INDIA_MAP_VIEWBOX} role="group" aria-label="Map of India - select a state">
+    {indiaMapRegions.map(region => <g
+      key={region.name}
+      className={`india-map-region ${selected === region.name ? 'active' : ''}`}
+      role="button" tabIndex={0} aria-label={region.name}
+      onClick={() => onSelect(region.name)}
+      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(region.name) } }}
+    ><title>{region.name}</title>{region.paths.map((d, index) => <path key={index} d={d}/>)}</g>)}
+  </svg>
+}
 
 type Page = 'overview' | 'upload' | 'verification' | 'records' | 'gis' | 'audit' | 'settings'
 
@@ -37,7 +63,7 @@ const StatusBadge = ({ status }: { status: DocumentStatus }) => {
   return <span className={`status status-${status.toLowerCase().replace(' ', '-')}`}>{icon}{status}</span>
 }
 
-function LoginScreen({ onLogin, initialError = '' }: { onLogin: (user: AuthUser) => Promise<void>; initialError?: string }) {
+function LoginScreen({ onLogin, initialError = '', routeState, onSelectState }: { onLogin: (user: AuthUser) => Promise<void>; initialError?: string; routeState: string | null; onSelectState: (name: string | null) => void }) {
   const [username, setUsername] = useState('admin@dhara.gov.in')
   const [password, setPassword] = useState('Dhara@2026')
   const [loading, setLoading] = useState(false)
@@ -64,7 +90,13 @@ function LoginScreen({ onLogin, initialError = '' }: { onLogin: (user: AuthUser)
     }
   }
   return <main className="login-screen">
-    <section className="login-story"><div className="login-brand"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>भूमि अभिलेख</small></span></div><div className="login-message"><span className="eyebrow">INTELLIGENT LAND ADMINISTRATION</span><h1>Trusted records.<br/>Transparent governance.</h1><p>Securely digitize, validate, and connect legacy land records across languages, districts, and cadastral maps.</p><div className="login-assurance"><span><ShieldCheck size={18}/>Encrypted documents</span><span><FileCheck2 size={18}/>Human-verified accuracy</span><span><History size={18}/>Complete audit history</span></div></div><small>Uttar Pradesh Land Records Mission · Authorized access only</small></section>
+    <section className="login-story"><div className="login-brand"><span className="brand-mark"><span>ध</span></span><span className="brand-copy"><b>DHARA</b><small>भूमि अभिलेख</small></span></div><div className="login-message"><span className="eyebrow">{routeState ? 'STATE LAND RECORDS PORTAL' : 'INTELLIGENT LAND ADMINISTRATION'}</span>{routeState ? <h1>{routeState}<br/>Land Records</h1> : <h1>Trusted records.<br/>Transparent governance.</h1>}<p>Securely digitize, validate, and connect legacy land records across languages, districts, and cadastral maps.</p>{!routeState && <div className="login-assurance"><span><ShieldCheck size={18}/>Encrypted documents</span><span><FileCheck2 size={18}/>Human-verified accuracy</span><span><History size={18}/>Complete audit history</span></div>}
+      <div className="india-map-panel">
+        <div className="india-map-head"><span>{routeState ? `Selected: ${routeState}` : 'Select a state to open its portal'}</span>{routeState && <button type="button" className="india-map-clear" onClick={() => onSelectState(null)}>Show all states</button>}</div>
+        <IndiaMap selected={routeState} onSelect={name => onSelectState(name)}/>
+        <div className="india-map-extra">{STATES_WITHOUT_MAP_SHAPE.map(name => <button type="button" key={name} className={routeState === name ? 'active' : ''} onClick={() => onSelectState(name)}>{name}</button>)}</div>
+      </div>
+    </div><small>{routeState || 'Uttar Pradesh'} Land Records Mission · Authorized access only</small></section>
     <section className="login-panel"><form onSubmit={submit}><div className="login-emblem"><ShieldCheck size={26}/></div><span className="eyebrow">SECURE OFFICIAL PORTAL</span><h2>Sign in to Dhara</h2><p>Use your authorized departmental account.</p>{ssoConfigured && <button type="button" className="btn secondary login-submit" disabled={loading} onClick={startSso}><ShieldCheck size={17}/>Government SSO</button>}<label>Email address<input type="email" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" required/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required/></label>{error && <div className="login-error"><AlertTriangle size={15}/>{error}</div>}<button className="btn primary login-submit" disabled={loading}>{loading ? <><RefreshCcw size={17} className="spin"/>Signing in…</> : <><LogIn size={17}/>Sign in securely</>}</button><a className="citizen-link" href="/citizen"><UserRound size={16}/>Citizen services and request tracking</a><div className="demo-credentials"><strong>Prototype account</strong><span>Administrator credentials are pre-filled until government SSO is configured.</span></div></form></section>
   </main>
 }
@@ -721,6 +753,21 @@ function App() {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState('')
+  // Which state's portal the (signed-out) login screen is branded for - purely a navigation/
+  // display choice. It never grants access on its own: whoever actually signs in gets exactly
+  // what their own account's state assigns them, regardless of which state URL they arrived
+  // through, so this is safe to drive from an unauthenticated URL segment.
+  const [routeState, setRouteState] = useState<string | null>(() => window.location.pathname === '/citizen' ? null : stateFromSlug(window.location.pathname.slice(1)))
+  const navigateToState = (name: string | null) => {
+    const path = name ? `/${slugifyState(name)}` : '/'
+    window.history.pushState({}, '', path)
+    setRouteState(name)
+  }
+  useEffect(() => {
+    const onPopState = () => setRouteState(window.location.pathname === '/citizen' ? null : stateFromSlug(window.location.pathname.slice(1)))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   const refreshOperationalData = async (activeUser: AuthUser) => {
     const canReadAudit = ['Administrator', 'Verification Officer', 'Auditor'].includes(activeUser.role)
@@ -750,6 +797,10 @@ function App() {
 
   const showToast = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), 3000) }
   const login = async (loggedInUser: AuthUser) => {
+    // The state-portal URL was only ever branding for the signed-out screen; the signed-in
+    // app shell doesn't route on the path, and the sidebar already shows the account's real
+    // (server-assigned) state, so clear it rather than leave a stale /maharashtra in the bar.
+    if (window.location.pathname !== '/citizen') window.history.replaceState({}, '', '/')
     setUser(loggedInUser)
     await refreshOperationalData(loggedInUser)
   }
@@ -801,7 +852,7 @@ function App() {
 
   if (window.location.pathname === '/citizen') return <CitizenPortal/>
   if (authLoading) return <div className="app-loading"><span className="brand-mark"><span>ध</span></span><RefreshCcw className="spin"/>Preparing secure workspace…</div>
-  if (!user) return <LoginScreen onLogin={login} initialError={authError}/>
+  if (!user) return <LoginScreen onLogin={login} initialError={authError} routeState={routeState} onSelectState={navigateToState}/>
 
   return <div className="app-shell">
     <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} user={user} onLogout={logout} reviewCount={stats?.needs_review || 0}/>
