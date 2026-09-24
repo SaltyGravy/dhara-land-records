@@ -520,7 +520,14 @@ function RecordsPage({ docs, onReview, onOpen }: { docs: LandDocument[]; onRevie
 function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string) => void; canEdit: boolean; records: LandDocument[] }) {
   const [parcels, setParcels] = useState<ParcelFeature[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [query, setQuery] = useState('')
+  // A Bhunaksha-style drill-down (District -> Taluka -> Village, then plot search) instead
+  // of one flat text box - the options at each level come from the parcels we actually have
+  // mapped, not a fixed administrative list, so a district with no imported parcels yet
+  // just doesn't appear rather than showing an empty result set.
+  const [districtFilter, setDistrictFilter] = useState('')
+  const [tehsilFilter, setTehsilFilter] = useState('')
+  const [villageFilter, setVillageFilter] = useState('')
+  const [plotQuery, setPlotQuery] = useState('')
   const [zoom, setZoom] = useState(1)
   const [editing, setEditing] = useState(false)
   const [message, setMessage] = useState('')
@@ -528,12 +535,26 @@ function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string
   const importInput = useRef<HTMLInputElement>(null)
   const loadParcels = () => api.parcels().then(collection => { setParcels(collection.features); setSelectedId(current => current ?? collection.features[0]?.id ?? null) })
   useEffect(() => { loadParcels().catch(() => undefined) }, [])
-  const filtered = parcels.filter(parcel => `${parcel.properties.khasra} ${parcel.properties.owner} ${parcel.properties.village}`.toLowerCase().includes(query.toLowerCase()))
+  const districts = useMemo(() => Array.from(new Set(parcels.map(parcel => parcel.properties.district))).sort(), [parcels])
+  const tehsils = useMemo(() => Array.from(new Set(parcels.filter(parcel => !districtFilter || parcel.properties.district === districtFilter).map(parcel => parcel.properties.tehsil))).sort(), [parcels, districtFilter])
+  const villages = useMemo(() => Array.from(new Set(parcels.filter(parcel => (!districtFilter || parcel.properties.district === districtFilter) && (!tehsilFilter || parcel.properties.tehsil === tehsilFilter)).map(parcel => parcel.properties.village))).sort(), [parcels, districtFilter, tehsilFilter])
+  const located = parcels.filter(parcel =>
+    (!districtFilter || parcel.properties.district === districtFilter) &&
+    (!tehsilFilter || parcel.properties.tehsil === tehsilFilter) &&
+    (!villageFilter || parcel.properties.village === villageFilter))
+  const filtered = plotQuery ? located.filter(parcel => parcel.properties.khasra.toLowerCase().includes(plotQuery.toLowerCase())) : located
+  useEffect(() => {
+    if (filtered.length && !filtered.some(parcel => parcel.id === selectedId)) setSelectedId(filtered[0].id)
+  }, [districtFilter, tehsilFilter, villageFilter, plotQuery, parcels])
   const selected = parcels.find(parcel => parcel.id === selectedId) || filtered[0]
   useEffect(() => {
     if (selected) setForm({ owner: selected.properties.owner, classification: selected.properties.classification, status: selected.properties.status, record_id: selected.properties.record_id || '' })
   }, [selected?.id])
-  const allCoordinates = parcels.flatMap(parcel => parcel.geometry.coordinates[0])
+  // Bound the map to whatever's currently drilled into, not the whole state - each level of
+  // the location panel effectively zooms the map, the way picking a village narrows the plot
+  // list on Bhunaksha's own viewer.
+  const mapScope = located.length ? located : parcels
+  const allCoordinates = mapScope.flatMap(parcel => parcel.geometry.coordinates[0])
   const xs = allCoordinates.map(point => point[0]), ys = allCoordinates.map(point => point[1])
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
   const points = (parcel: ParcelFeature) => parcel.geometry.coordinates[0].map(([x,y]) => `${25 + ((x-minX)/(maxX-minX || 1))*450},${25 + ((maxY-y)/(maxY-minY || 1))*390}`).join(' ')
@@ -562,7 +583,13 @@ function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string
     } catch (error) { setMessage(error instanceof Error ? error.message : 'GeoJSON import failed.') }
     if (importInput.current) importInput.current.value = ''
   }
-  return <div className="gis-shell card"><div className="map-toolbar"><div className="search-box"><Search size={17}/><input placeholder="Find village, khasra or owner…" value={query} onChange={event => setQuery(event.target.value)}/></div><div><span className="parcel-count"><Filter size={16}/>{filtered.length} parcels</span>{canEdit && <><input ref={importInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={event => importGeoJson(event.target.files?.[0])}/><button className="btn secondary" onClick={() => importInput.current?.click()}><Upload size={16}/>Import</button></>}<button className="btn secondary" onClick={() => api.exportParcels()}><MapPin size={16}/>GeoJSON</button></div></div>
+  return <div className="gis-shell card"><div className="map-toolbar"><div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+      <label className="filter-select"><MapPin size={14}/><select className="select-button" value={districtFilter} onChange={event => { setDistrictFilter(event.target.value); setTehsilFilter(''); setVillageFilter('') }}><option value="">All districts</option>{districts.map(option => <option key={option}>{option}</option>)}</select></label>
+      <label className="filter-select"><select className="select-button" value={tehsilFilter} onChange={event => { setTehsilFilter(event.target.value); setVillageFilter('') }}><option value="">All talukas</option>{tehsils.map(option => <option key={option}>{option}</option>)}</select></label>
+      <label className="filter-select"><select className="select-button" value={villageFilter} onChange={event => setVillageFilter(event.target.value)}><option value="">All villages</option>{villages.map(option => <option key={option}>{option}</option>)}</select></label>
+      <div className="search-box"><Search size={17}/><input placeholder="Search plot / khasra no…" value={plotQuery} onChange={event => setPlotQuery(event.target.value)}/></div>
+      {filtered.length > 0 && <label className="filter-select"><select className="select-button" value={selected?.id ?? ''} onChange={event => setSelectedId(Number(event.target.value))}>{filtered.map(parcel => <option key={parcel.id} value={parcel.id}>Plot {parcel.properties.khasra}</option>)}</select></label>}
+    </div><div><span className="parcel-count"><Filter size={16}/>{filtered.length} parcels</span>{canEdit && <><input ref={importInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={event => importGeoJson(event.target.files?.[0])}/><button className="btn secondary" onClick={() => importInput.current?.click()}><Upload size={16}/>Import</button></>}<button className="btn secondary" onClick={() => api.exportParcels()}><MapPin size={16}/>GeoJSON</button></div></div>
     {message && <div className="gis-message">{message}</div>}
     <div className="map-body"><div className="map-canvas"><div className="road horizontal"><span>ग्राम मार्ग</span></div><div className="road vertical"/>{parcels.length ? <svg viewBox="0 0 500 450" preserveAspectRatio="xMidYMid meet" style={{transform:`scale(${zoom})`}}>{filtered.map(parcel => { const label = centre(parcel); return <g key={parcel.id} onClick={() => { setSelectedId(parcel.id); setEditing(false) }} className={`parcel ${selected?.id === parcel.id ? 'selected' : ''} ${parcel.properties.status === 'Needs review' ? 'needs-review' : ''}`}><polygon points={points(parcel)}/><text x={label.x} y={label.y}>{parcel.properties.khasra}</text></g> })}</svg> : <div className="map-loading"><RefreshCcw className="spin"/>Loading cadastral parcels…</div>}<div className="map-controls"><button onClick={() => setZoom(value => Math.min(1.6, value + .15))} aria-label="Zoom in">+</button><button onClick={() => setZoom(value => Math.max(.7, value - .15))} aria-label="Zoom out">−</button></div><div className="map-legend"><span><i className="verified-land"/>Verified</span><span><i className="review-land"/>Needs review</span><span><i className="selected-land"/>Selected</span></div></div>
       {selected && <aside className="parcel-panel"><div className="parcel-head"><span className="eyebrow">SELECTED PARCEL</span><h2>Khasra {selected.properties.khasra}</h2><StatusBadge status={selected.properties.status as DocumentStatus}/></div>{editing ? <form className="parcel-edit-form" onSubmit={saveParcel}><label>Recorded owner<input value={form.owner} onChange={event => setForm({...form, owner:event.target.value})} required/></label><label>Classification<input value={form.classification} onChange={event => setForm({...form, classification:event.target.value})} required/></label><label>Status<select value={form.status} onChange={event => setForm({...form, status:event.target.value})}><option>Verified</option><option>Needs review</option><option>Rejected</option></select></label><label>Linked record<select value={form.record_id} onChange={event => setForm({...form, record_id:event.target.value})}><option value="">Not linked</option>{records.map(record => <option key={record.id}>{record.id}</option>)}</select></label><div><button type="button" className="btn secondary" onClick={() => setEditing(false)}>Cancel</button><button className="btn primary">Save parcel</button></div></form> : <><div className="parcel-details"><label>Recorded owner<strong>{selected.properties.owner}</strong></label><label>Area<strong>{selected.properties.area} ha</strong></label><label>Classification<strong>{selected.properties.classification}</strong></label><label>Village<strong>{selected.properties.village}</strong></label><label>Tehsil / District<strong>{selected.properties.tehsil} / {selected.properties.district}</strong></label><label>Linked record<strong className="link-text">{selected.properties.record_id || 'Not linked'}</strong></label></div><div className="boundary-check"><CheckCircle2 size={19}/><div><strong>Validated GeoJSON boundary</strong><span>Parcel geometry is loaded from the spatial records API.</span></div></div>{canEdit && <button className="btn secondary full" onClick={() => setEditing(true)}><Settings size={16}/>Edit and link parcel</button>}<button className="btn primary full" disabled={!selected.properties.record_id} onClick={() => selected.properties.record_id && onOpenRecord(selected.properties.record_id)}><FileText size={16}/>{selected.properties.record_id ? 'Open complete record' : 'No linked record'}</button></>}</aside>}
