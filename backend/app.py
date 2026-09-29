@@ -864,7 +864,7 @@ def integration_status(_: User = Depends(require_roles("Administrator"))):
         ("GeoServer", "GEOSERVER_URL", "Authoritative cadastral and GIS layers"),
         ("Registration", "REGISTRATION_API_URL", "Registration and deed verification"),
         ("Notifications", "NOTIFICATION_GATEWAY_URL", "Government SMS and email gateway"),
-        ("Grafana", "GRAFANA_DASHBOARD_URL", "Embedded analytics dashboard"),
+        ("Metabase", "METABASE_DASHBOARD_URL", "Embedded analytics dashboard"),
     ]
     return [{
         "key": key,
@@ -875,15 +875,16 @@ def integration_status(_: User = Depends(require_roles("Administrator"))):
     } for key, variable, name in integrations]
 
 
-@app.get("/api/integrations/grafana")
-def grafana_status(_: User = Depends(require_roles(*AUDIT_ROLES))):
-    # A public Grafana dashboard is just a URL - no token exchange, no service-account
-    # credentials to manage server-side. See GRAFANA_DASHBOARD_URL in project notes for
-    # what "public dashboard" trades away (anyone with the link can view it, no Grafana
-    # login) in exchange for needing zero backend integration code.
-    dashboard_url = os.getenv("GRAFANA_DASHBOARD_URL", "")
+@app.get("/api/integrations/metabase")
+def metabase_status(_: User = Depends(require_roles(*AUDIT_ROLES))):
+    # A public Metabase dashboard link is just a URL - no token exchange, no service-account
+    # credentials to manage server-side. See METABASE_DASHBOARD_URL in project notes for what
+    # "public sharing" trades away (anyone with the link can view it, no Metabase login) in
+    # exchange for needing zero backend integration code. Metabase itself is self-hosted
+    # (open source, free forever, no trial) - see project notes for the deploy walkthrough.
+    dashboard_url = os.getenv("METABASE_DASHBOARD_URL", "")
     if not dashboard_url:
-        return {"configured": False, "message": "Grafana is not connected. Set GRAFANA_DASHBOARD_URL to a public dashboard link."}
+        return {"configured": False, "message": "Metabase is not connected. Set METABASE_DASHBOARD_URL to a public dashboard link."}
     return {"configured": True, "dashboard_url": dashboard_url}
 
 
