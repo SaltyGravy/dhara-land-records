@@ -590,6 +590,20 @@ function GisPage({ onOpenRecord, canEdit, records }: { onOpenRecord: (id: string
   useEffect(() => { loadParcels().catch(() => undefined) }, [])
   const inCategory = (parcel: ParcelFeature) => !categoryFilter || parcel.properties.category === categoryFilter
   const districts = useMemo(() => Array.from(new Set(parcels.filter(inCategory).map(parcel => parcel.properties.district))).sort(), [parcels, categoryFilter])
+  // The map fits every currently-scoped parcel into one shared bounding box (see mapScope
+  // below) - fine when a state's parcels sit close together, but a state whose districts are
+  // genuinely far apart (e.g. Mumbai Suburban vs Pune, ~150km) shrinks each parcel's polygon
+  // to sub-pixel size against that combined span, so only the floating labels are visible and
+  // the map reads as broken/empty. Defaulting to the first district avoids that without
+  // touching the parcels' real coordinates - only fires once, so a later deliberate switch
+  // back to "All districts" isn't immediately fought.
+  const autoSelectedDistrict = useRef(false)
+  useEffect(() => {
+    if (!autoSelectedDistrict.current && !districtFilter && districts.length > 1) {
+      autoSelectedDistrict.current = true
+      setDistrictFilter(districts[0])
+    }
+  }, [districts])
   const tehsils = useMemo(() => Array.from(new Set(parcels.filter(parcel => inCategory(parcel) && (!districtFilter || parcel.properties.district === districtFilter)).map(parcel => parcel.properties.tehsil))).sort(), [parcels, categoryFilter, districtFilter])
   const villages = useMemo(() => Array.from(new Set(parcels.filter(parcel => inCategory(parcel) && (!districtFilter || parcel.properties.district === districtFilter) && (!tehsilFilter || parcel.properties.tehsil === tehsilFilter)).map(parcel => parcel.properties.village))).sort(), [parcels, categoryFilter, districtFilter, tehsilFilter])
   const located = parcels.filter(parcel =>
