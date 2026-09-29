@@ -227,6 +227,28 @@ def test_plot_row_area_and_intra_batch_duplicate_checks():
         assert "intra_batch_duplicate_khasra" in codes
 
 
+def test_acre_decimal_area_is_not_misread_as_zero():
+    # Bihar/Bengal khatauni registers state area in the Acre-Decimal system ("0 ए 49 ड 0 ह" =
+    # 0 acre 49 decimal), not hectares. The naive check used to grab only the first number in
+    # the string - which is legitimately 0 whenever a plot is under one acre - and flag every
+    # such (perfectly valid, positive) area as invalid.
+    with TestClient(app) as client:
+        operator = auth(client, "operator@dhara.gov.in")
+        rows = [
+            {"khata": "140", "khasra": "154", "area": "0 ए 49 ड 0 ह", "rent": "260", "cess": "0"},
+            {"khata": "140", "khasra": "71", "area": "3 ए 20 ड 0 ह", "rent": "260", "cess": "0"},
+        ]
+        batch_id = create_document(client, operator, district="Kishanganj")
+        result = submit_extraction(
+            client, batch_id, operator,
+            {"Landowner name": "Test Owner", "Village": "Test Village", "District": "Kishanganj", "Khasra number": "154", "Plot area": "0 ए 49 ड 0 ह"},
+            plot_rows=rows,
+        )
+        codes = {issue["code"] for issue in result[0]["validation_issues"]}
+        assert "invalid_area" not in codes
+        assert "invalid_plot_row_area" not in codes
+
+
 def test_cross_modal_geometry_validation():
     with TestClient(app) as client:
         operator = auth(client, "operator@dhara.gov.in")

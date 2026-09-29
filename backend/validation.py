@@ -32,6 +32,11 @@ _AREA_UNIT_TO_HECTARES = {
     "हे": 1.0, "हे०": 1.0, "हेक्टेयर": 1.0,
     "acre": 0.404686, "acres": 0.404686, "एकड़": 0.404686,
     "sqm": 0.0001,
+    # Bihar/Bengal khatauni registers state area in the Acre-Decimal system, not hectares:
+    # "0 ए 49 ड 0 ह" = 0 एकड़ (acre) 49 डिसमिल (decimal, 1/100 acre) - the third component's
+    # exact unit is unconfirmed but is 0 in every register this app has seen, so it is mapped
+    # to a zero-weight placeholder rather than guessed at with a real conversion factor.
+    "ए": 0.404686, "ड": 0.404686 / 100, "ह": 0.0,
 }
 
 _EARTH_METERS_PER_DEGREE = 111_320.0
@@ -41,24 +46,42 @@ def _field_map(document: Document) -> dict[str, str]:
     return {field.label: field.value.strip() for field in document.fields}
 
 
+_AREA_TOKEN = re.compile(r"(\d+(?:\.\d+)?)\s*(hectares?|ha|acres?|sq\.?\s*m\.?|हे(?:क्टेयर)?०?|एकड़|ए|ड|ह)?")
+
+
 def _parse_area_hectares(text: str) -> float | None:
     if not text:
         return None
     normalized = text.translate(_INDIC_DIGITS).strip().lower()
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(hectares?|ha|acres?|sq\.?\s*m\.?|हे(?:क्टेयर)?०?|एकड़)?", normalized)
-    if not match:
+    matches = [m for m in _AREA_TOKEN.finditer(normalized) if m.group(1)]
+    if not matches:
         return None
-    try:
-        number = float(match.group(1))
-    except ValueError:
-        return None
-    unit = (match.group(2) or "").replace(" ", "").replace(".", "")
-    if not unit:
+    if len(matches) == 1 and not matches[0].group(2):
         # FIELD_RULES/extractStructuredFields capture a bare number when the source omits a
         # unit; hectares is the register convention these forms otherwise use.
-        return number
-    factor = _AREA_UNIT_TO_HECTARES.get(unit) or _AREA_UNIT_TO_HECTARES.get(unit.rstrip("s"))
-    return number * factor if factor is not None else None
+        try:
+            return float(matches[0].group(1))
+        except ValueError:
+            return None
+    # Multiple number+unit pairs in one string (e.g. "0 ए 49 ड 0 ह") is the Acre-Decimal
+    # system Bihar/Bengal khatauni registers state area in, not a single hectare figure -
+    # each pair is a separate unit and has to be summed, not just the first one read off.
+    total = 0.0
+    matched_any_unit = False
+    for match in matches:
+        try:
+            number = float(match.group(1))
+        except ValueError:
+            continue
+        unit = (match.group(2) or "").replace(" ", "").replace(".", "")
+        if not unit:
+            continue
+        factor = _AREA_UNIT_TO_HECTARES.get(unit) or _AREA_UNIT_TO_HECTARES.get(unit.rstrip("s"))
+        if factor is None:
+            continue
+        total += number * factor
+        matched_any_unit = True
+    return total if matched_any_unit else None
 
 
 def _ring_area_hectares(ring: list[list[float]]) -> float:
@@ -203,8 +226,8 @@ def validate_record(db: Session, document: Document) -> list[dict]:
 
     area = values.get("Plot area", "")
     if area:
-        match = re.search(r"\d+(?:\.\d+)?", area)
-        if not match or float(match.group()) <= 0:
+        parsed_area = _parse_area_hectares(area)
+        if parsed_area is None or parsed_area <= 0:
             issues.append({"code": "invalid_area", "field": "Plot area", "severity": "error", "message": "Plot area must be a positive measurement."})
 
     _duplicate_and_conflict_checks(db, document, values, issues)
